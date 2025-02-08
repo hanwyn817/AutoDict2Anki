@@ -1,0 +1,4 @@
+requests
+schedule
+selenium
+webdriver_manager
