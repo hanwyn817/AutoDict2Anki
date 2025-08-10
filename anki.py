@@ -18,6 +18,15 @@ def can_add_card(target_word, target_deck_name):
                         "正面": target_word,
                         "背面": ""
                     },
+                    "options": {
+                        "allowDuplicate": False,
+                        "duplicateScope": "deck",
+                        "duplicateScopeOptions": {
+                            "deckName": target_deck_name,
+                            "checkChildren": False,
+                            "checkAllModels": False
+                        }
+                    },    
                 "tags": []
                 }
             ]
@@ -54,6 +63,11 @@ def add_card_to_anki_by_ankiConnect(front, back, deck_name):
                 "options": {
                     "allowDuplicate": False,
                     "duplicateScope": "deck",
+                    "duplicateScopeOptions": {
+                        "deckName": deck_name,
+                        "checkChildren": False,
+                        "checkAllModels": False
+                    }
                 },
                 "tags": []
             }
