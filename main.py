@@ -4,10 +4,14 @@ import config
 import logging
 import datetime
 import os
+from dotenv import load_dotenv
 from ai import formatted_word_data
 from eudict_fetcher import get_all_words_data, is_cookie_valid, get_cookie_via_browser
 from mdx_dict import get_word_definition
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
+
+# 读取 .env 中的环境变量（如 Cookie、API Key 等）
+load_dotenv()
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
