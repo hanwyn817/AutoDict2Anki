@@ -4,6 +4,7 @@ import config
 import logging
 import datetime
 import os
+import requests
 from dotenv import load_dotenv
 from ai import formatted_word_data
 from eudict_fetcher import get_all_words_data, is_cookie_valid, get_cookie_via_browser
@@ -38,6 +39,9 @@ def process_word(word):
         else:
             return False, word['uuid'] + "无法获取到释义。"  # 返回失败标志和失败单词的uuid
     except Exception as e:
+        if isinstance(e, requests.exceptions.ConnectionError):
+            # AnkiConnect 未连接，向上抛出以阻止后续流程
+            raise
         logger.error(f"Error processing word {word['uuid']}: {e}")
         return False, word['uuid']  # 返回失败标志和失败单词的uuid
 
@@ -116,6 +120,7 @@ def set_last_run_time(run_time):
 
 
 def job():
+    job_success = False
     last_run_time = get_last_run_time()
     if not last_run_time:
         print("未获取到上次运行时间，请手动填写 last_run_time.txt 后再运行程序。")
@@ -136,15 +141,21 @@ def job():
             logger.warning("未获取到自上次运行时间以来的新单词，任务终止。")
             return
         success_count, failure_count, succeed_words, failed_words = process_words(new_words)
+        job_success = True
+    except requests.exceptions.ConnectionError:
+        logger.error("连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。")
+        return
     except Exception as e:
         logger.error(f"Error fetching new words: {e}")
         success_count = 0
         failure_count = 0
         succeed_words = []
         failed_words = []
+        return
     end_time = datetime.datetime.now()  # 获取结束时间
-    set_last_run_time(end_time)
-    write_result(success_count, failure_count, succeed_words, failed_words, start_time, end_time)
+    if job_success:
+        set_last_run_time(end_time)
+        write_result(success_count, failure_count, succeed_words, failed_words, start_time, end_time)
 
 
 if __name__ == "__main__":
