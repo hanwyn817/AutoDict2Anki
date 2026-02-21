@@ -2,43 +2,43 @@ import json
 import logging
 
 from http_utils import request_with_retry
+import config
 
 logger = logging.getLogger(__name__)
 
 AI_TIMEOUT = 20
 AI_MAX_RETRIES = 3
 
-sys_prompt = """
-你是一名专业的雅思英语教师。现在我会给你一个英文单词或词组，你需要返回它的详细中文释义和例句，要求如下：
+def get_sys_prompt():
+    return f"""
+你是一名专业的{config.USER_TARGET_EXAM}英语教师。现在我会给你一个英文单词或词组，你需要返回它的详细中文释义和例句，要求如下：
 
-1. 输出必须为严格的 JSON 格式，并且没有除 JSON 字符串之外的字符。结构如下：
-构为：
-{
+1. 输出必须为严格的 JSON 格式，并且没有除 JSON 字符串之外的字符。结构为：
+{{
   "word": "单词",
   "meanings": [
-    {
+    {{
       "meaning": "中文含义",
       "examples": [
-        {
+        {{
           "english": "英文例句",
           "translation": "中文翻译"
-        },
-        {
+        }},
+        {{
           "english": "英文例句",
           "translation": "中文翻译"
-        }
+        }}
       ]
-    },
-    ...
+    }}
   ]
-}
+}}
 
 2. 对于该单词或词组的每个常见中文含义，都必须单独列出一个 `meaning` 条目。  
    - 如果该词有多个常用含义，请全部列出。  
    - 每个含义必须提供**至少两个**不同的英文例句，例句中可以使用该词的不同词形变化（如时态、复数等）。
 
 3. 例句要求：  
-   - 简洁自然，语法正确，贴近雅思考试场景或常见英文表达。  
+   - 简洁自然，语法正确，贴近{config.USER_TARGET_EXAM}考试场景或常见英文表达。  
    - 例句必须与对应的中文含义高度匹配，避免含糊不清或生僻用法。  
    - 提供的中文翻译需准确且流畅。
 
@@ -51,10 +51,10 @@ def get_word_data_ai(word, api_key):
     if not api_key:
         raise ValueError("AI_API_KEY 未配置，无法调用 AI 释义服务。")
 
-    query_prompt = sys_prompt + word
-    url = "https://api.siliconflow.cn/v1/chat/completions"
+    query_prompt = get_sys_prompt() + word
+    url = config.AI_API_URL
     payload = {
-        "model": "Pro/deepseek-ai/DeepSeek-V3",
+        "model": config.AI_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -62,7 +62,7 @@ def get_word_data_ai(word, api_key):
             }
         ],
         "stream": False,
-        "max_tokens": 512,
+        "max_tokens": 1024,
         "stop": ["null"],
         "temperature": 0.7,
         "top_p": 0.7,

@@ -13,7 +13,7 @@ import config
 from ai import formatted_word_data
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
 from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
-from eudict_fetcher import get_all_words_data, get_cookie_via_browser, is_cookie_valid
+from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
 from models import ProcessResult, WordEntry
 
@@ -32,12 +32,8 @@ def get_valid_cookie(initial_cookie: Optional[str]) -> Optional[str]:
     if is_cookie_valid(cookie):
         return cookie
 
-    logger.warning("当前 cookie 无效，尝试通过浏览器手动登录获取新的 cookie...")
-    new_cookie = get_cookie_via_browser()
-    if not new_cookie:
-        logger.error("获取新的 cookie 失败，程序终止。")
-        return None
-    return new_cookie
+    logger.error("当前 cookie 无效或已过期，请运行 `python login.py` 更新 Cookie。程序终止。")
+    return None
 
 
 def _is_after_cursor(
@@ -86,7 +82,7 @@ def process_word(word: WordEntry, deck_name: str) -> ProcessResult:
 
     if not definition:
         try:
-            definition = formatted_word_data(word.uuid, os.environ.get("AI_API_KEY"))
+            definition = formatted_word_data(word.uuid, config.AI_API_KEY)
         except Exception as exc:
             logger.error("AI 释义失败，word=%s, error=%s", word.uuid, exc)
             return ProcessResult(status="failed", word=word.uuid, reason=f"AI 释义失败: {exc}")

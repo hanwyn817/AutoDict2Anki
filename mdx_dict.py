@@ -1,4 +1,4 @@
-from readmdict import MDX
+from lib.mdict.readmdict import MDX
 import os
 from typing import Optional
 
@@ -27,12 +27,15 @@ class Dictionary:
             return None
 
 
+_dictionary_instances = {}
+
 def get_word_definition(this_word: str, the_file_path: str) -> Optional[str]:
     """
     获取指定单词的定义
     """
-    dictionary = Dictionary(the_file_path)
-    return dictionary.get_definition(this_word)
+    if the_file_path not in _dictionary_instances:
+        _dictionary_instances[the_file_path] = Dictionary(the_file_path)
+    return _dictionary_instances[the_file_path].get_definition(this_word)
 
 # if __name__ == '__main__':
 #     word = "sperm"

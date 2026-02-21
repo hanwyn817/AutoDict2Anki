@@ -2,8 +2,10 @@ import json
 from typing import Any, Dict
 
 from http_utils import request_with_retry
+import config
+import datetime
 
-ANKI_CONNECT_URL = "http://127.0.0.1:8765"
+ANKI_CONNECT_URL = config.ANKI_CONNECT_URL
 HEADERS = {"Content-Type": "application/json"}
 
 

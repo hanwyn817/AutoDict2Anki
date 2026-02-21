@@ -5,7 +5,8 @@ import os
 
 from dotenv import load_dotenv
 
-from eudict_fetcher import get_cookie_via_browser, is_cookie_valid
+from eudict_fetcher import is_cookie_valid
+from login import get_cookie_via_browser
 from main import get_recent_words_list, process_words, write_result
 
 # 加载 .env 文件中的环境变量
