@@ -1,5 +1,12 @@
 import json
-import requests
+import logging
+
+from http_utils import request_with_retry
+
+logger = logging.getLogger(__name__)
+
+AI_TIMEOUT = 20
+AI_MAX_RETRIES = 3
 
 sys_prompt = """
 你是一名专业的雅思英语教师。现在我会给你一个英文单词或词组，你需要返回它的详细中文释义和例句，要求如下：
@@ -41,6 +48,9 @@ sys_prompt = """
 """
 
 def get_word_data_ai(word, api_key):
+    if not api_key:
+        raise ValueError("AI_API_KEY 未配置，无法调用 AI 释义服务。")
+
     query_prompt = sys_prompt + word
     url = "https://api.siliconflow.cn/v1/chat/completions"
     payload = {
@@ -66,16 +76,29 @@ def get_word_data_ai(word, api_key):
         "Content-Type": "application/json"
     }
 
-    response = requests.request("POST", url, json=payload, headers=headers)
-    # print(response.status_code)
+    response = request_with_retry(
+        "POST",
+        url,
+        json=payload,
+        headers=headers,
+        timeout=AI_TIMEOUT,
+        max_retries=AI_MAX_RETRIES,
+    )
+    response.raise_for_status()
     return response.text
 
 def formatted_word_data(word, api_key):
     # 提取 content 的内容
-    word_json_data =get_word_data_ai(word, api_key)
+    word_json_data = get_word_data_ai(word, api_key)
     word_json_data = json.loads(word_json_data)["choices"][0]["message"]["content"]
     # 去除 content 中的 Markdown 代码块标记（```json 和 ```）
-    word_json_data = word_json_data.strip("```json\n").strip("```")
+    word_json_data = word_json_data.strip()
+    if word_json_data.startswith("```json"):
+        word_json_data = word_json_data[len("```json"):].strip()
+    if word_json_data.startswith("```"):
+        word_json_data = word_json_data[len("```"):].strip()
+    if word_json_data.endswith("```"):
+        word_json_data = word_json_data[:-len("```")].strip()
     # 将 content 中的 JSON 字符串解析为 Python 字典
     word_json_data = json.loads(word_json_data)
 
@@ -177,14 +200,14 @@ def formatted_word_data(word, api_key):
         return html_content
 
     except ValueError as ve:
-        print(f"错误: {ve}")
+        logger.error("AI 数据格式错误: %s", ve)
         return ""
     except KeyError as ke:
-        print(f"错误: {ke}")
+        logger.error("AI 数据缺少字段: %s", ke)
         return ""
     except TypeError as te:
-        print(f"错误: {te}")
+        logger.error("AI 数据类型错误: %s", te)
         return ""
     except Exception as e:
-        print(f"发生未知错误: {e}")
+        logger.error("AI 释义处理未知错误: %s", e)
         return ""

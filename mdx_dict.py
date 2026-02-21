@@ -1,5 +1,6 @@
 from readmdict import MDX
 import os
+from typing import Optional
 
 class Dictionary:
     def __init__(self, temp_file_path):
@@ -23,23 +24,15 @@ class Dictionary:
             recovery_css = '<div class="_collinsEC"><style> @import url(_collinsEC_wrap.css); </style>'
             return recovery_css + explanation.decode('utf-8') + "</div>"
         except StopIteration:
-            return "No definition available."
+            return None
 
 
-def get_word_definition(this_word, the_file_path):
+def get_word_definition(this_word: str, the_file_path: str) -> Optional[str]:
     """
     获取指定单词的定义
     """
-    try:
-        # 初始化词典对象
-        dictionary = Dictionary(the_file_path)
-
-        # 获取并返回单词的定义
-        return dictionary.get_definition(this_word)
-    except FileNotFoundError as e:
-        return str(e)
-    except Exception as e:
-        return f"Error: {str(e)}"
+    dictionary = Dictionary(the_file_path)
+    return dictionary.get_definition(this_word)
 
 # if __name__ == '__main__':
 #     word = "sperm"

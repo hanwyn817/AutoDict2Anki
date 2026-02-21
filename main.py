@@ -1,15 +1,21 @@
+import datetime
+import json
+import logging
+import os
 import schedule
 import time
-import config
-import logging
-import datetime
-import os
+from typing import Dict, List, Optional, Tuple
+
 import requests
 from dotenv import load_dotenv
+
+import config
 from ai import formatted_word_data
-from eudict_fetcher import get_all_words_data, is_cookie_valid, get_cookie_via_browser
-from mdx_dict import get_word_definition
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
+from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
+from eudict_fetcher import get_all_words_data, get_cookie_via_browser, is_cookie_valid
+from mdx_dict import get_word_definition
+from models import ProcessResult, WordEntry
 
 # 读取 .env 中的环境变量（如 Cookie、API Key 等）
 load_dotenv()
@@ -18,144 +24,280 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def process_word(word):
-    """获取单词定义并添加到Anki"""
+CURSOR_FILE_PATH = "last_run_time.txt"
+
+
+def get_valid_cookie(initial_cookie: Optional[str]) -> Optional[str]:
+    cookie = initial_cookie or ""
+    if is_cookie_valid(cookie):
+        return cookie
+
+    logger.warning("当前 cookie 无效，尝试通过浏览器手动登录获取新的 cookie...")
+    new_cookie = get_cookie_via_browser()
+    if not new_cookie:
+        logger.error("获取新的 cookie 失败，程序终止。")
+        return None
+    return new_cookie
+
+
+def _is_after_cursor(
+    word: WordEntry,
+    cursor_time: datetime.datetime,
+    cursor_uuid: Optional[str],
+) -> bool:
+    if word.addtime > cursor_time:
+        return True
+    if word.addtime < cursor_time:
+        return False
+    if not cursor_uuid:
+        return True
+    return word.uuid > cursor_uuid
+
+
+def _parse_cursor_file_content(content: str) -> Tuple[datetime.datetime, Optional[str]]:
+    raw = content.strip()
+    if not raw:
+        raise ValueError("游标文件为空")
+
+    if raw.startswith("{"):
+        payload = json.loads(raw)
+        cursor_time = parse_datetime_flexible(str(payload.get("last_addtime", "")).strip())
+        if not cursor_time:
+            raise ValueError("游标文件中的 last_addtime 无法解析")
+        cursor_uuid = str(payload.get("last_word_uuid", "")).strip() or None
+        return cursor_time, cursor_uuid
+
+    legacy_time = parse_datetime_flexible(raw)
+    if not legacy_time:
+        raise ValueError("游标文件时间格式不正确")
+    return legacy_time, None
+
+
+def process_word(word: WordEntry, deck_name: str) -> ProcessResult:
+    """获取单词定义并添加到 Anki。"""
     try:
-        # 从MDX文件中获取定义
-        definition = get_word_definition(word['uuid'], config.MDX_FILE_PATH)
+        definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
+    except FileNotFoundError as exc:
+        logger.error("MDX 文件不存在: %s", exc)
+        return ProcessResult(status="failed", word=word.uuid, reason=str(exc))
+    except Exception as exc:
+        logger.error("词典查询失败，word=%s, error=%s", word.uuid, exc)
+        return ProcessResult(status="failed", word=word.uuid, reason=f"词典查询失败: {exc}")
 
-        # 如果没有定义，则使用AI获取
-        if definition == "No definition available.":
-            definition = formatted_word_data(word['uuid'], os.environ.get("AI_API_KEY", os.environ.get("AI_API_KEY")))
+    if not definition:
+        try:
+            definition = formatted_word_data(word.uuid, os.environ.get("AI_API_KEY"))
+        except Exception as exc:
+            logger.error("AI 释义失败，word=%s, error=%s", word.uuid, exc)
+            return ProcessResult(status="failed", word=word.uuid, reason=f"AI 释义失败: {exc}")
 
-        if definition:
-            # 将单词和定义添加到Anki
-            add_result = add_card_to_anki_by_ankiConnect(word['uuid'], definition, config.ANKI_DECK_NAME)
-            if add_result["error"] is None:
-                logger.info(f"Added word {word['uuid']} to Anki successfully.")
-                return True, word['uuid']
-            else:
-                return False, "\n" + word['uuid'] + " " + add_result["error"]
-        else:
-            return False, word['uuid'] + "无法获取到释义。"  # 返回失败标志和失败单词的uuid
-    except Exception as e:
-        if isinstance(e, requests.exceptions.ConnectionError):
-            # AnkiConnect 未连接，向上抛出以阻止后续流程
-            raise
-        logger.error(f"Error processing word {word['uuid']}: {e}")
-        return False, word['uuid']  # 返回失败标志和失败单词的uuid
+    if not definition:
+        return ProcessResult(status="failed", word=word.uuid, reason="无法获取到释义")
+
+    try:
+        add_result = add_card_to_anki_by_ankiConnect(word.uuid, definition, deck_name)
+    except requests.exceptions.ConnectionError:
+        # AnkiConnect 未连接，向上抛出以阻止后续流程
+        raise
+    except Exception as exc:
+        logger.error("写入 Anki 失败，word=%s, error=%s", word.uuid, exc)
+        return ProcessResult(status="failed", word=word.uuid, reason=f"写入 Anki 失败: {exc}")
+
+    add_error = add_result.get("error") if isinstance(add_result, dict) else "Anki 返回格式错误"
+    if add_error is None:
+        logger.info("Added word %s to Anki successfully.", word.uuid)
+        return ProcessResult(status="added", word=word.uuid)
+    return ProcessResult(status="failed", word=word.uuid, reason=str(add_error))
 
 
-def get_new_words_list(last_run_time):
-    """获取新增单词列表"""
-    cookie = os.environ.get("EUDICT_WEB_COOKIE", os.environ.get("EUDICT_WEB_COOKIE"))
-    if not is_cookie_valid(cookie):
-        print("当前 cookie 无效，尝试通过浏览器手动登录获取新的 cookie...")
-        new_cookie = get_cookie_via_browser()
-        if new_cookie:
-            cookie = new_cookie
-        else:
-            print("获取新的 cookie 失败，程序终止。")
-            return []
-    # 获取所有单词
+def get_new_words_list(last_run_cursor: Tuple[datetime.datetime, Optional[str]]) -> List[WordEntry]:
+    """根据游标获取新增单词列表。"""
+    last_run_time, last_run_uuid = last_run_cursor
+    cookie = get_valid_cookie(os.environ.get("EUDICT_WEB_COOKIE"))
+    if not cookie:
+        return []
+
     all_words_data = get_all_words_data(cookie)
-    # 获取自上次运行时间以来的新单词
-    last_run_time_dt = datetime.datetime.fromisoformat(last_run_time)
     recent_words_data = [
-        entry for entry in all_words_data
-        if datetime.datetime.fromisoformat(entry['addtime']) > last_run_time_dt
+        entry for entry in all_words_data if _is_after_cursor(entry, last_run_time, last_run_uuid)
     ]
+    recent_words_data.sort(key=lambda item: (item.addtime, item.uuid))
     return recent_words_data
 
 
-def process_words(new_words):
-    """处理单词，返回成功和失败的单词列表"""
-    success_count = 0
-    failure_count = 0
-    failed_words = []
-    succeed_words = []
+def get_recent_words_list(cookie: str, count: int = 10) -> List[WordEntry]:
+    """获取最近新增的指定数量单词列表（用于测试脚本）。"""
+    all_words_data = get_all_words_data(cookie, page_size=max(200, count))
+    sorted_words = sorted(all_words_data, key=lambda x: x.addtime, reverse=True)
+    return sorted_words[:count]
+
+
+def process_words(new_words: List[WordEntry], deck_name: str) -> List[ProcessResult]:
+    """处理单词并返回处理结果列表。"""
+    results: List[ProcessResult] = []
     for word in new_words:
-        # 先判断牌组中是否已有word对应的note，若有则跳过
-        if can_add_card(word["uuid"], config.ANKI_DECK_NAME):
-            success, outcome = process_word(word)
-        else:
-            success = False
-            outcome = f"\n【重复】牌组 {config.ANKI_DECK_NAME} 中已存在{word['uuid']}，添加失败"
-        if success:
-            success_count += 1
-            succeed_words.append(outcome)
-        else:
-            failure_count += 1
-            failed_words.append(outcome)
-    return success_count, failure_count, succeed_words, failed_words
+        try:
+            if can_add_card(word.uuid, deck_name):
+                results.append(process_word(word, deck_name))
+            else:
+                results.append(
+                    ProcessResult(
+                        status="skipped_duplicate",
+                        word=word.uuid,
+                        reason=f"牌组 {deck_name} 中已存在",
+                    )
+                )
+        except requests.exceptions.ConnectionError:
+            raise
+        except Exception as exc:
+            logger.error("处理单词失败，word=%s, error=%s", word.uuid, exc)
+            results.append(ProcessResult(status="failed", word=word.uuid, reason=str(exc)))
+    return results
 
 
-def write_result(success_count, failure_count, succeed_words, failed_words, start_time, end_time):
-    """写入结果到文件并输出日志"""
-    logger.info(f"Job completed. Successfully processed {success_count} words: {', ' .join(succeed_words)}")
-    logger.info(f"Failed to process {failure_count} words.")
+def get_progress_cursor_word(
+    new_words: List[WordEntry],
+    results: List[ProcessResult],
+) -> Optional[WordEntry]:
+    progressed_word: Optional[WordEntry] = None
+    for word, result in zip(new_words, results):
+        if result.status == "failed":
+            break
+        progressed_word = word
+    return progressed_word
+
+
+def summarize_results(results: List[ProcessResult]) -> Dict[str, List[str]]:
+    summary: Dict[str, List[str]] = {
+        "added": [],
+        "skipped_duplicate": [],
+        "failed": [],
+    }
+    for result in results:
+        if result.status == "added":
+            summary["added"].append(result.word)
+            continue
+        if result.status == "skipped_duplicate":
+            detail = result.word
+            if result.reason:
+                detail = f"{result.word}: {result.reason}"
+            summary["skipped_duplicate"].append(detail)
+            continue
+
+        detail = result.word
+        if result.reason:
+            detail = f"{result.word}: {result.reason}"
+        summary["failed"].append(detail)
+    return summary
+
+
+def write_result(
+    results: List[ProcessResult],
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    deck_name: str,
+    result_file_path: str = "result.txt",
+) -> None:
+    """写入结果到文件并输出日志。"""
+    summary = summarize_results(results)
+    success_count = len(summary["added"])
+    skipped_count = len(summary["skipped_duplicate"])
+    failure_count = len(summary["failed"])
+
+    logger.info("Job completed. Successfully processed %s words.", success_count)
+    logger.info("Skipped duplicate words: %s", skipped_count)
+    logger.info("Failed words: %s", failure_count)
+    if skipped_count > 0:
+        logger.warning("Skipped words: %s", ", ".join(summary["skipped_duplicate"]))
     if failure_count > 0:
-        logger.warning(f"Failed words: {', '.join(failed_words)}")
-    logger.info(f"Job completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Execution time: {end_time - start_time}")
-    logger.info(f"运行结果已保存至result.txt")
-    with open("result.txt", "w", encoding="utf-8") as f:
+        logger.warning("Failed words: %s", ", ".join(summary["failed"]))
+    logger.info("Job completed at %s", end_time.strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("Execution time: %s", end_time - start_time)
+    logger.info("运行结果已保存至 %s", result_file_path)
+
+    with open(result_file_path, "w", encoding="utf-8") as f:
+        f.write(f"目标牌组: {deck_name}\n")
         f.write(f"成功单词: {success_count}\n")
+        f.write(f"跳过重复: {skipped_count}\n")
         f.write(f"失败单词: {failure_count}\n")
-        f.write(f"成功单词列表: {', '.join(succeed_words)}\n")
-        f.write(f"失败单词列表: {', '.join(failed_words)}\n")
+        f.write(f"成功单词列表: {', '.join(summary['added'])}\n")
+        f.write(f"跳过单词列表: {', '.join(summary['skipped_duplicate'])}\n")
+        f.write(f"失败单词列表: {', '.join(summary['failed'])}\n")
         f.write(f"执行时间: {end_time - start_time}\n")
 
 
-def get_last_run_time():
+def get_last_sync_cursor() -> Optional[Tuple[datetime.datetime, Optional[str]]]:
     try:
-        with open("last_run_time.txt", "r", encoding="utf-8") as f:
-            return f.read().strip()
+        with open(CURSOR_FILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
     except FileNotFoundError:
         return None
 
-def set_last_run_time(run_time):
-    with open("last_run_time.txt", "w", encoding="utf-8") as f:
-        f.write(run_time.strftime("%Y-%m-%d %H:%M:%S"))
+    if not content:
+        return None
+
+    return _parse_cursor_file_content(content)
 
 
-def job():
+def set_last_sync_cursor(run_time: datetime.datetime, run_uuid: Optional[str]) -> None:
+    payload = {
+        "last_addtime": format_datetime_for_storage(run_time),
+        "last_word_uuid": run_uuid or "",
+    }
+    with open(CURSOR_FILE_PATH, "w", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False))
+
+
+def job() -> None:
     job_success = False
-    last_run_time = get_last_run_time()
-    if not last_run_time:
+    try:
+        last_sync_cursor = get_last_sync_cursor()
+    except Exception:
+        print("last_run_time.txt 中的游标格式不正确，请修正后重试。")
+        return
+
+    if not last_sync_cursor:
         print("未获取到上次运行时间，请手动填写 last_run_time.txt 后再运行程序。")
         return
-    try:
-        last_run_time_dt = datetime.datetime.fromisoformat(last_run_time)
-    except Exception:
-        print("last_run_time.txt 中的时间格式不正确，请手动修正为形如 2025-01-01 20:00:00 的格式。");
-        return
+
+    last_run_time_dt, last_run_uuid = last_sync_cursor
     if last_run_time_dt > datetime.datetime.now():
-        print("last_run_time.txt 中的时间晚于当前时间，请检查并修正。");
+        print("last_run_time.txt 中的时间晚于当前时间，请检查并修正。")
         return
-    logger.info(f"上次运行时间: {last_run_time}")
-    start_time = datetime.datetime.now()  # 获取开始时间
+
+    logger.info(
+        "上次运行游标: time=%s uuid=%s",
+        format_datetime_for_storage(last_run_time_dt),
+        last_run_uuid or "",
+    )
+    start_time = datetime.datetime.now()
     try:
-        new_words = get_new_words_list(last_run_time)
+        new_words = get_new_words_list(last_sync_cursor)
         if not new_words:
             logger.warning("未获取到自上次运行时间以来的新单词，任务终止。")
             return
-        success_count, failure_count, succeed_words, failed_words = process_words(new_words)
+        results = process_words(new_words, config.ANKI_DECK_NAME)
         job_success = True
     except requests.exceptions.ConnectionError:
         logger.error("连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。")
         return
-    except Exception as e:
-        logger.error(f"Error fetching new words: {e}")
-        success_count = 0
-        failure_count = 0
-        succeed_words = []
-        failed_words = []
+    except Exception as exc:
+        logger.error("Error fetching new words: %s", exc)
         return
-    end_time = datetime.datetime.now()  # 获取结束时间
+
+    end_time = datetime.datetime.now()
     if job_success:
-        set_last_run_time(end_time)
-        write_result(success_count, failure_count, succeed_words, failed_words, start_time, end_time)
+        progress_word = get_progress_cursor_word(new_words, results)
+        if progress_word:
+            set_last_sync_cursor(progress_word.addtime, progress_word.uuid)
+            logger.info(
+                "游标已推进到: time=%s uuid=%s",
+                format_datetime_for_storage(progress_word.addtime),
+                progress_word.uuid,
+            )
+        else:
+            logger.warning("本次无可推进游标的成功处理记录，保留原游标。")
+        write_result(results, start_time, end_time, config.ANKI_DECK_NAME)
 
 
 if __name__ == "__main__":

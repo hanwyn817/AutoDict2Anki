@@ -3,3 +3,4 @@ schedule
 selenium
 webdriver_manager
 python-dotenv
+pytest
