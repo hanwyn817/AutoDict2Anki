@@ -1,5 +1,7 @@
 import json
+import os
 import logging
+from jinja2 import Environment, FileSystemLoader
 
 from http_utils import request_with_retry
 import config
@@ -102,71 +104,9 @@ def formatted_word_data(word, api_key):
     # 将 content 中的 JSON 字符串解析为 Python 字典
     word_json_data = json.loads(word_json_data)
 
-
-    html_template = """
-    <div class="_collinsEC">
-        <style>
-            @import url(_collinsEC_wrap.css);
-        </style>
-
-        <head>
-            <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-            <link href="collinsEC.css" rel="stylesheet" type="text/css" />
-        </head>
-
-        <body>
-            <a name="page_top"></a>
-
-            <div class="C1_word_header">
-                <span class="C1_word_header_word">{word}</span>
-                <span class="C1_color_bar">
-                    <ul>
-                        <li class="C1_cabr_1"></li>
-                        <li class="C1_cabr_2"></li>
-                        <li class="C1_cabr_3"></li>
-                        <li class="C1_cabr_4"></li>
-                        <li class="C1_cabr_5"></li>
-                        <li class="C1_cabr_6"></li>
-                    </ul>
-                </span>
-            </div>
-
-            <div class="tab_content" id="dict_tab_101" style="display:block">
-                <div class="part_main">
-                    <div class="collins_content">
-                        {meanings}
-                    </div>
-                </div>
-            </div>
-        </body>
-    </div>
-    """
-
-    # 函数来生成含义和例句的HTML内容
-    def generate_meanings_html(meanings):
-        meaning_items_html = ""
-        for idx, meaning in enumerate(meanings, 1):
-            meaning_item_html = f"""
-            <div class="C1_explanation_item">
-                <div class="C1_explanation_box">
-                    <span class="C1_item_number"><a href="entry://#page_top">{idx}</a></span>
-                    <span class="C1_text_blue">{meaning['meaning']}</span>
-                </div>
-                <ul>
-            """
-
-            for example in meaning['examples']:
-                meaning_item_html += f"""
-                <li>
-                    <p class="C1_sentence_en">{example['english']}</p>
-                    <p>{example['translation']}</p>
-                </li>
-                """
-
-            meaning_item_html += "</ul></div>"
-            meaning_items_html += meaning_item_html
-
-        return meaning_items_html
+    template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+    env = Environment(loader=FileSystemLoader(template_dir))
+    template = env.get_template('word_card.html')
 
     # 异常处理函数，验证JSON格式
     def validate_json(data):
@@ -193,9 +133,9 @@ def formatted_word_data(word, api_key):
         validate_json(word_json_data)
 
         # 将模型返回的数据插入到模板中
-        html_content = html_template.format(
+        html_content = template.render(
             word=word_json_data["word"],
-            meanings=generate_meanings_html(word_json_data["meanings"])
+            meanings=word_json_data["meanings"]
         )
         return html_content
 
