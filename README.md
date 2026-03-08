@@ -120,6 +120,9 @@ while True:
 ### 4. 程序报错“Cookie 无效”？
 欧路 Cookie 在一段时间后会自动过期。最快的解决办法是在同一环境执行 `python login.py` 打开浏览器，重新登录一下即可自动更新 `.env` 中的 Cookie。
 
+## 致谢
+本项目的本地 MDX/MDD 词典解析功能使用了 [mdict-analysis](https://github.com/hehonghui/mdict-analysis) 库。
+
 ---
 
 如有更多问题或建议，欢迎 issue 或 PR！
