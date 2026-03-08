@@ -165,21 +165,36 @@ def summarize_results(results: List[ProcessResult]) -> Dict[str, List[str]]:
         "skipped_duplicate": [],
         "failed": [],
     }
+    
+    skipped_groups = {}
+
     for result in results:
         if result.status == "added":
             summary["added"].append(result.word)
             continue
         if result.status == "skipped_duplicate":
-            detail = result.word
-            if result.reason:
-                detail = f"{result.word}: {result.reason}"
-            summary["skipped_duplicate"].append(detail)
+            reason = result.reason or "未知牌组"
+            if reason not in skipped_groups:
+                skipped_groups[reason] = []
+            skipped_groups[reason].append(result.word)
             continue
 
         detail = result.word
         if result.reason:
             detail = f"{result.word}: {result.reason}"
         summary["failed"].append(detail)
+
+    if skipped_groups:
+        formatted_groups = []
+        for reason, words in skipped_groups.items():
+            words_str = ", ".join(words)
+            if "中已存在" in reason:
+                formatted_reason = reason.replace("中已存在", "中已存在重复的卡片")
+            else:
+                formatted_reason = f"牌组 {reason} 中已存在重复的卡片"
+            formatted_groups.append(f"{formatted_reason}: {words_str}")
+        summary["skipped_duplicate"] = ["; ".join(formatted_groups)]
+
     return summary
 
 
@@ -192,15 +207,18 @@ def write_result(
 ) -> None:
     """写入结果到文件并输出日志。"""
     summary = summarize_results(results)
-    success_count = len(summary["added"])
-    skipped_count = len(summary["skipped_duplicate"])
-    failure_count = len(summary["failed"])
+    success_count = sum(1 for r in results if r.status == "added")
+    skipped_count = sum(1 for r in results if r.status == "skipped_duplicate")
+    failure_count = sum(1 for r in results if r.status == "failed")
 
     logger.info("Job completed. Successfully processed %s words.", success_count)
     logger.info("Skipped duplicate words: %s", skipped_count)
     logger.info("Failed words: %s", failure_count)
     if skipped_count > 0:
-        logger.warning("Skipped words: %s", ", ".join(summary["skipped_duplicate"]))
+        logger.warning(
+            "Skipped words: %s",
+            summary["skipped_duplicate"][0] if summary["skipped_duplicate"] else "",
+        )
     if failure_count > 0:
         logger.warning("Failed words: %s", ", ".join(summary["failed"]))
     logger.info("Job completed at %s", end_time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -213,7 +231,9 @@ def write_result(
         f.write(f"跳过重复: {skipped_count}\n")
         f.write(f"失败单词: {failure_count}\n")
         f.write(f"成功单词列表: {', '.join(summary['added'])}\n")
-        f.write(f"跳过单词列表: {', '.join(summary['skipped_duplicate'])}\n")
+        f.write(
+            f"跳过单词列表: {summary['skipped_duplicate'][0] if summary['skipped_duplicate'] else ''}\n"
+        )
         f.write(f"失败单词列表: {', '.join(summary['failed'])}\n")
         f.write(f"执行时间: {end_time - start_time}\n")
 
