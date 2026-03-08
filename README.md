@@ -23,8 +23,9 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
 - 每次成功拉取单词并同步至 Anki 后，程序会自动更新该文件为 JSON 格式的最新同步游标（包含 `last_addtime` 和 `last_word_uuid`）。
 
 ## 依赖环境
+- 本项目使用 `uv` 管理虚拟环境和依赖包
 - Python 3.8 及以上
-- 主要依赖包 (见 `requirements.txt`):
+- 主要依赖包:
   - `requests`
   - `schedule`
   - `selenium` & `webdriver_manager` (用于登录获取 Cookie)
@@ -40,11 +41,10 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
    cd AutoDict2Anki
    ```
 
-2. **创建虚拟环境并安装依赖**
+2. **安装依赖**
+   请确保已安装 [uv](https://docs.astral.sh/uv/)，然后执行同步：
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   uv sync
    ```
 
 3. **配置环境变量**
@@ -84,14 +84,14 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
 ### 1. 更新 Cookie
 欧路网页版的 Cookie 可能会定期失效，当遇到 `Cookie 无效或已过期` 的报错时，你可以运行自带的登录脚本：
 ```bash
-python login.py
+uv run login.py
 ```
 该脚本将弹出 Chrome 浏览器窗体。请在使用微信或手机号手动登录后，回到终端按下回车，程序会自动提取最新有效 Cookie 并将其保存到 `.env` 文件中。
 
 ### 2. 运行单次同步
 直接执行主脚本：
 ```bash
-python main.py
+uv run main.py
 ```
 程序将从生词本拉取增量单词，自动查询 MDX 或请求 AI 释义，并推送到 Anki。运行结果会自动汇总输出到 `result.txt` 以及终端日志中。
 
