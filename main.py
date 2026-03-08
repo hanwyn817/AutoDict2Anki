@@ -11,6 +11,7 @@ import requests
 import config
 from ai import formatted_word_data
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
+from anki_web import add_card_to_ankiweb
 from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
 from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
@@ -87,7 +88,10 @@ def process_word(word: WordEntry, deck_name: str) -> ProcessResult:
         return ProcessResult(status="failed", word=word.uuid, reason="无法获取到释义")
 
     try:
-        add_result = add_card_to_anki_by_ankiConnect(word.uuid, definition, deck_name)
+        if config.ANKI_SYNC_METHOD == "ankiweb":
+            add_result = add_card_to_ankiweb(word.uuid, definition, deck_name)
+        else:
+            add_result = add_card_to_anki_by_ankiConnect(word.uuid, definition, deck_name)
     except requests.exceptions.ConnectionError:
         # AnkiConnect 未连接，向上抛出以阻止后续流程
         raise
@@ -96,7 +100,7 @@ def process_word(word: WordEntry, deck_name: str) -> ProcessResult:
         return ProcessResult(status="failed", word=word.uuid, reason=f"写入 Anki 失败: {exc}")
 
     add_error = add_result.get("error") if isinstance(add_result, dict) else "Anki 返回格式错误"
-    if add_error is None:
+    if not add_error:
         logger.info("Added word %s to Anki successfully.", word.uuid)
         return ProcessResult(status="added", word=word.uuid)
     return ProcessResult(status="failed", word=word.uuid, reason=str(add_error))
@@ -127,9 +131,16 @@ def get_recent_words_list(cookie: str, count: int = 10) -> List[WordEntry]:
 def process_words(new_words: List[WordEntry], deck_name: str) -> List[ProcessResult]:
     """处理单词并返回处理结果列表。"""
     results: List[ProcessResult] = []
+    
+    use_ankiweb = config.ANKI_SYNC_METHOD == "ankiweb"
+
     for word in new_words:
         try:
-            if can_add_card(word.uuid, deck_name):
+            can_add = True
+            if not use_ankiweb:
+                can_add = can_add_card(word.uuid, deck_name)
+
+            if can_add:
                 results.append(process_word(word, deck_name))
             else:
                 results.append(
@@ -313,13 +324,19 @@ def job() -> None:
 
 
 if __name__ == "__main__":
-    # 立即执行 job()，如果是直接运行脚本
-    job()
-
-    # 设置定时任务，每天固定时间执行
-    # schedule.every().day.at("03:00").do(job)
-
-    # 定时执行任务
-    # while True:
-    #     schedule.run_pending()
-    #     time.sleep(1)
+    import sys
+    
+    # 检查是否以守护进程模式启动
+    if "--daemon" in sys.argv:
+        logger.info("启动守护进程模式 (每 12 小时执行一次)...")
+        schedule.every(12).hours.do(job)
+        
+        # 立即执行一次
+        job()
+        
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    else:
+        # 单次执行任务
+        job()
