@@ -7,7 +7,6 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import requests
-from dotenv import load_dotenv
 
 import config
 from ai import formatted_word_data
@@ -16,9 +15,6 @@ from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
 from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
 from models import ProcessResult, WordEntry
-
-# 读取 .env 中的环境变量（如 Cookie、API Key 等）
-load_dotenv()
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 词典配置
 MDX_FILE_PATH = os.environ.get("MDX_FILE_PATH", "resources/Collins COBUILD (CN).mdx")
