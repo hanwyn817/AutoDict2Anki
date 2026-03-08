@@ -36,7 +36,7 @@ def can_add_card(target_word: str, target_deck_name: str) -> bool:
             "notes": [
                 {
                     "deckName": target_deck_name,
-                    "modelName": "基础",
+                    "modelName": config.ANKI_NOTE_TYPE,
                     "fields": {
                         "正面": target_word,
                         "背面": "",

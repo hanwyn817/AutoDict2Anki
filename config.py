@@ -11,6 +11,7 @@ MDD_FILE_PATH = os.environ.get("MDD_FILE_PATH", "resources/Collins COBUILD (CN).
 ANKI_SYNC_METHOD = os.environ.get("ANKI_SYNC_METHOD", "ankiconnect").lower() # 'ankiconnect' or 'ankiweb'
 ANKI_CONNECT_URL = os.environ.get("ANKI_CONNECT_URL", "http://127.0.0.1:8765")
 ANKI_DECK_NAME = os.environ.get("ANKI_DECK_NAME", "Manki's Daily")
+ANKI_NOTE_TYPE = os.environ.get("ANKI_NOTE_TYPE", "基础")
 ANKIWEB_COOKIE = os.environ.get("ANKIWEB_COOKIE", "") or os.environ.get("ANKI_WEB_COOKIE", "")
 
 # AI 配置

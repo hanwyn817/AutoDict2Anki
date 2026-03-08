@@ -79,6 +79,7 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
      ANKI_SYNC_METHOD="ankiconnect" # 可选: ankiconnect (本地) 或 ankiweb (无头网页)
      ANKI_CONNECT_URL="http://127.0.0.1:8765" # 仅在 ankiconnect 模式时生效
      ANKI_WEB_COOKIE="your_anki_web_cookie_here" # 仅在 ankiweb 模式时生效
+     ANKI_NOTE_TYPE="基础" # 笔记类型
      ANKI_DECK_NAME="Manki's Daily"
      ```
 

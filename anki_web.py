@@ -32,31 +32,32 @@ def _parse_cookie_string(cookie_str: str, domain: str) -> list[dict]:
     return cookies
 
 
-def _select_deck(page: Page, deck_name: str) -> str | None:
+def _select_svelte_dropdown(page: Page, label: str, target_value: str) -> str | None:
     """
-    检查当前牌组是否匹配，如果不匹配则尝试切换。
-    AnkiWeb 使用 Svelte 自定义下拉框组件 (svelte-select)。
+    检查并切换 AnkiWeb 页面上的 svelte-select 下拉框。
+    label: 行标签文本，如 'Type' 或 'Deck'。
+    target_value: 目标值。
     返回 None 表示成功，否则返回错误信息。
     """
-    deck_row = page.locator('div.form-group.row', has_text='Deck')
-    selected_item = deck_row.locator('div.selected-item')
+    row = page.locator('div.form-group.row', has_text=label)
+    selected_item = row.locator('div.selected-item')
 
-    current_deck = selected_item.inner_text().strip()
-    if current_deck == deck_name:
-        logger.info("当前牌组已经是 '%s'，无需切换。", deck_name)
+    current_value = selected_item.inner_text().strip()
+    if current_value == target_value:
+        logger.info("当前 %s 已经是 '%s'，无需切换。", label, target_value)
         return None
 
-    logger.info("当前牌组为 '%s'，需要切换到 '%s'", current_deck, deck_name)
-    deck_input = deck_row.locator('input[type="text"]')
-    deck_input.click()
-    deck_input.fill(deck_name)
+    logger.info("当前 %s 为 '%s'，需要切换到 '%s'", label, current_value, target_value)
+    dropdown_input = row.locator('input[type="text"]')
+    dropdown_input.click()
+    dropdown_input.fill(target_value)
 
     try:
-        option = page.locator(f'div.list-item .item:has-text("{deck_name}")').first
+        option = page.locator(f'div.list-item .item:has-text("{target_value}")').first
         option.wait_for(state="visible", timeout=3000)
         option.click()
     except Exception:
-        return f"未能在 AnkiWeb 中找到名为 '{deck_name}' 的牌组。"
+        return f"未能在 AnkiWeb 中找到名为 '{target_value}' 的 {label}。"
 
     return None
 
@@ -69,7 +70,7 @@ class AnkiWebSession:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
-        self._deck_selected = False
+        self._dropdown_selected = False
 
     def open(self) -> str | None:
         """
@@ -119,7 +120,7 @@ class AnkiWebSession:
         self._context = None
         self._browser = None
         self._playwright = None
-        self._deck_selected = False
+        self._dropdown_selected = False
 
     def add_card(self, front: str, back: str, deck_name: str) -> Dict[str, Any]:
         """
@@ -137,12 +138,15 @@ class AnkiWebSession:
         page = self._page
 
         try:
-            # 仅在首张卡片时切换牌组（之后页面会保持选择）
-            if not self._deck_selected:
-                deck_error = _select_deck(page, deck_name)
+            # 仅在首张卡片时检查并切换 Type 和 Deck（之后页面会保持选择）
+            if not self._dropdown_selected:
+                type_error = _select_svelte_dropdown(page, 'Type', config.ANKI_NOTE_TYPE)
+                if type_error:
+                    return {"error": type_error}
+                deck_error = _select_svelte_dropdown(page, 'Deck', deck_name)
                 if deck_error:
                     return {"error": deck_error}
-                self._deck_selected = True
+                self._dropdown_selected = True
 
             # Fill the front field
             front_field = page.locator('div.form-control.field').nth(0)
