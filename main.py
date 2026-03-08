@@ -11,7 +11,7 @@ import requests
 import config
 from ai import formatted_word_data
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
-from anki_web import add_card_to_ankiweb
+from anki_web import AnkiWebSession, CARD_ADD_INTERVAL
 from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
 from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
@@ -66,7 +66,7 @@ def _parse_cursor_file_content(content: str) -> Tuple[datetime.datetime, Optiona
     return legacy_time, None
 
 
-def process_word(word: WordEntry, deck_name: str) -> ProcessResult:
+def process_word(word: WordEntry, deck_name: str, ankiweb_session=None) -> ProcessResult:
     """获取单词定义并添加到 Anki。"""
     try:
         definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
@@ -88,8 +88,8 @@ def process_word(word: WordEntry, deck_name: str) -> ProcessResult:
         return ProcessResult(status="failed", word=word.uuid, reason="无法获取到释义")
 
     try:
-        if config.ANKI_SYNC_METHOD == "ankiweb":
-            add_result = add_card_to_ankiweb(word.uuid, definition, deck_name)
+        if ankiweb_session:
+            add_result = ankiweb_session.add_card(word.uuid, definition, deck_name)
         else:
             add_result = add_card_to_anki_by_ankiConnect(word.uuid, definition, deck_name)
     except requests.exceptions.ConnectionError:
@@ -133,28 +133,45 @@ def process_words(new_words: List[WordEntry], deck_name: str) -> List[ProcessRes
     results: List[ProcessResult] = []
     
     use_ankiweb = config.ANKI_SYNC_METHOD == "ankiweb"
+    ankiweb_session = None
 
-    for word in new_words:
-        try:
-            can_add = True
-            if not use_ankiweb:
-                can_add = can_add_card(word.uuid, deck_name)
+    if use_ankiweb:
+        ankiweb_session = AnkiWebSession()
+        open_err = ankiweb_session.open()
+        if open_err:
+            logger.error("AnkiWeb 会话启动失败: %s", open_err)
+            return [ProcessResult(status="failed", word=w.uuid, reason=open_err) for w in new_words]
 
-            if can_add:
-                results.append(process_word(word, deck_name))
-            else:
-                results.append(
-                    ProcessResult(
-                        status="skipped_duplicate",
-                        word=word.uuid,
-                        reason=f"牌组 {deck_name} 中已存在",
+    try:
+        for i, word in enumerate(new_words):
+            try:
+                can_add = True
+                if not use_ankiweb:
+                    can_add = can_add_card(word.uuid, deck_name)
+
+                if can_add:
+                    results.append(process_word(word, deck_name, ankiweb_session))
+                else:
+                    results.append(
+                        ProcessResult(
+                            status="skipped_duplicate",
+                            word=word.uuid,
+                            reason=f"牌组 {deck_name} 中已存在",
+                        )
                     )
-                )
-        except requests.exceptions.ConnectionError:
-            raise
-        except Exception as exc:
-            logger.error("处理单词失败，word=%s, error=%s", word.uuid, exc)
-            results.append(ProcessResult(status="failed", word=word.uuid, reason=str(exc)))
+            except requests.exceptions.ConnectionError:
+                raise
+            except Exception as exc:
+                logger.error("处理单词失败，word=%s, error=%s", word.uuid, exc)
+                results.append(ProcessResult(status="failed", word=word.uuid, reason=str(exc)))
+
+            # AnkiWeb 模式下在卡片之间添加间隔，防止被限流
+            if use_ankiweb and i < len(new_words) - 1:
+                time.sleep(CARD_ADD_INTERVAL)
+    finally:
+        if ankiweb_session:
+            ankiweb_session.close()
+
     return results
 
 
