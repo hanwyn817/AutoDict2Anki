@@ -29,6 +29,10 @@ def sc_send(title: str, desp: str = '') -> None:
         response = requests.post(url, json=params, headers=headers, timeout=10)
         response.raise_for_status()
         result = response.json()
-        logger.info(f"Server酱推送结果: {result}")
+        
+        if result.get("code") == 0 or result.get("message") == "SUCCESS":
+            logger.info("Server酱推送成功")
+        else:
+            logger.error(f"Server酱推送失败: {result.get('message', result)}")
     except Exception as e:
         logger.error(f"Server酱推送异常: {e}")

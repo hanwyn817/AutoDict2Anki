@@ -107,7 +107,6 @@ def process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progress
 
     add_error = add_result.get("error") if isinstance(add_result, dict) else "Anki 返回格式错误"
     if not add_error:
-        logger.info("Added word %s to Anki successfully.", word.uuid)
         return ProcessResult(status="added", word=word.uuid)
     return ProcessResult(status="failed", word=word.uuid, reason=str(add_error))
 
