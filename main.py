@@ -16,6 +16,12 @@ from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
 from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
 from models import ProcessResult, WordEntry
+from notification import sc_send
+from anki_web import AnkiWebSession, CARD_ADD_INTERVAL, SESSION_ERROR_PREFIX
+from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
+from eudict_fetcher import get_all_words_data, is_cookie_valid
+from mdx_dict import get_word_definition
+from models import ProcessResult, WordEntry
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -24,13 +30,13 @@ logger = logging.getLogger(__name__)
 CURSOR_FILE_PATH = "last_run_time.txt"
 
 
-def get_valid_cookie(initial_cookie: Optional[str]) -> Optional[str]:
+def get_valid_cookie(initial_cookie: Optional[str]) -> str:
     cookie = initial_cookie or ""
     if is_cookie_valid(cookie):
         return cookie
 
     logger.error("当前 cookie 无效或已过期，请运行 `python login.py` 更新 Cookie。程序终止。")
-    return None
+    raise ValueError("当前 EUDICT_WEB_COOKIE 无效或已过期")
 
 
 def _is_after_cursor(
@@ -110,8 +116,6 @@ def get_new_words_list(last_run_cursor: Tuple[datetime.datetime, Optional[str]])
     """根据游标获取新增单词列表。"""
     last_run_time, last_run_uuid = last_run_cursor
     cookie = get_valid_cookie(os.environ.get("EUDICT_WEB_COOKIE"))
-    if not cookie:
-        return []
 
     all_words_data = get_all_words_data(cookie)
     recent_words_data = [
@@ -302,11 +306,15 @@ def job() -> None:
     try:
         last_sync_cursor = get_last_sync_cursor()
     except Exception:
-        print("last_run_time.txt 中的游标格式不正确，请修正后重试。")
+        msg = "last_run_time.txt 中的游标格式不正确，请修正后重试。"
+        logger.error(msg)
+        sc_send("AutoDict2Anki 运行失败", msg)
         return
 
     if not last_sync_cursor:
-        print("未获取到上次运行时间，请手动填写 last_run_time.txt 后再运行程序。")
+        msg = "未获取到上次运行时间，请手动填写 last_run_time.txt 后再运行程序。"
+        logger.error(msg)
+        sc_send("AutoDict2Anki 运行失败", msg)
         return
 
     last_run_time_dt, last_run_uuid = last_sync_cursor
@@ -323,18 +331,23 @@ def job() -> None:
     try:
         new_words = get_new_words_list(last_sync_cursor)
         if not new_words:
-            logger.warning("未获取到自上次运行时间以来的新单词，任务终止。")
+            logger.info("未获取到自上次运行时间以来的新单词，任务终止。")
             return
         results = process_words(new_words, config.ANKI_DECK_NAME)
         job_success = True
     except requests.exceptions.ConnectionError:
         if config.ANKI_SYNC_METHOD == "ankiweb":
-            logger.error("连接 AnkiWeb 失败，请检查 VPS 网络连通性。")
+            msg = "连接 AnkiWeb 失败，请检查 VPS 网络连通性。"
+            logger.error(msg)
         else:
-            logger.error("连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。")
+            msg = "连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。"
+            logger.error(msg)
+        sc_send("AutoDict2Anki 运行失败", msg)
         return
     except Exception as exc:
-        logger.error("Error fetching new words: %s", exc)
+        msg = f"Error fetching new words or processing: {exc}"
+        logger.error(msg)
+        sc_send("AutoDict2Anki 运行失败", msg)
         return
 
     end_time = datetime.datetime.now()
@@ -350,6 +363,33 @@ def job() -> None:
         else:
             logger.warning("本次无可推进游标的成功处理记录，保留原游标。")
         write_result(results, start_time, end_time, config.ANKI_DECK_NAME)
+
+        # 整理推送信息
+        summary = summarize_results(results)
+        success_count = sum(1 for r in results if r.status == "added")
+        skipped_count = sum(1 for r in results if r.status == "skipped_duplicate")
+        failure_count = sum(1 for r in results if r.status == "failed")
+        
+        title = f"AutoDict2Anki 运行完成 ({success_count} 成功"
+        if failure_count > 0:
+            title += f", {failure_count} 失败"
+        title += ")"
+
+        desp = f"**目标牌组**: {config.ANKI_DECK_NAME}\n\n"
+        if progress_word:
+            new_time_str = format_datetime_for_storage(progress_word.addtime)
+            desp += f"**游标已推进到**: {new_time_str} (uuid: {progress_word.uuid})\n\n"
+
+        if success_count > 0:
+            desp += f"**成功单词** ({success_count}): {', '.join(summary['added'])}\n\n"
+        if skipped_count > 0:
+            skipped_reason = summary['skipped_duplicate'][0] if summary['skipped_duplicate'] else ''
+            desp += f"**跳过重复** ({skipped_count}): {skipped_reason}\n\n"
+        if failure_count > 0:
+            desp += f"**失败单词** ({failure_count}): {', '.join(summary['failed'])}\n\n"
+        desp += f"**执行时间**: {end_time - start_time}\n"
+
+        sc_send(title, desp)
 
 
 if __name__ == "__main__":

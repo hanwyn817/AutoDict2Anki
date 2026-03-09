@@ -19,3 +19,7 @@ AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_API_URL = os.environ.get("AI_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
 AI_MODEL = os.environ.get("AI_MODEL", "Pro/deepseek-ai/DeepSeek-V3")
 USER_TARGET_EXAM = os.environ.get("USER_TARGET_EXAM", "雅思")
+
+# 推送配置
+SERVERCHAN_SENDKEY = os.environ.get("SERVERCHAN_SENDKEY", "")
+
