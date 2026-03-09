@@ -104,13 +104,22 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
 ## 用法说明
 
 ### 1. 更新 Cookie
-欧路网页版或 AnkiWeb 的 Cookie 可能会到期失效。推荐使用内置的 CLI 工具更新（尤其适合无图形界面的 VPS）：
+欧路网页版或 AnkiWeb 的 Cookie 可能会到期失效。  
+
+如果你是 **本地运行项目**，或者是通过 `.env` 文件管理配置，推荐使用内置的 CLI 工具更新：
 ```bash
 uv run update_cookie.py
 ```
 程序将提示您选择要更新 `EUDICT_WEB_COOKIE` 还是 `ANKI_WEB_COOKIE`，只需把浏览器网络抓包里找到的最新 Cookie 字符串粘贴进终端回车即可。
 
 *(附：本地机器仍可以使用 `uv run login.py` 自动弹窗扫码获取欧路词典的 Cookie)*
+
+如果你是 **通过 dpanel 页面配置环境变量** 部署容器，请不要依赖 `update_cookie.py`。正确做法是：
+
+- 在你本地电脑的浏览器里获取最新 Cookie
+- 回到 dpanel 容器/应用配置页面
+- 直接修改 `EUDICT_WEB_COOKIE` 或 `ANKI_WEB_COOKIE`
+- 保存配置后重建或重新部署容器，使新的环境变量生效
 
 ### 2. 运行单次同步
 直接执行主脚本：
@@ -227,6 +236,11 @@ docker compose logs -f autodict2anki
 - 首次部署时设置一个过去时间的 `INITIAL_CURSOR_TIME`
 - 确保 VPS 能访问 `my.eudic.net`、AI API 服务地址以及 `ankiuser.net`
 
+关于 Cookie 更新：
+
+- 如果你使用的是 dpanel 页面里的环境变量，请在 **本地浏览器获取新 Cookie** 后，直接回到 dpanel 修改环境变量
+- 不建议在这种模式下使用 `update_cookie.py`，因为它修改的是容器内 `.env` 文件，不一定能覆盖 dpanel 注入的环境变量，也可能在容器重建后丢失
+
 这个项目不需要对外暴露端口，因为它本质上是后台定时任务，不是 Web 服务。
 
 ## 常见问题 FAQ
@@ -243,12 +257,19 @@ docker compose logs -f autodict2anki
 - `ANKI_CONNECT_URL` 是否是 `http://127.0.0.1:8765`，且没有被其他程序占用。
 
 ### 4. AnkiWeb 添加失败？ *(ankiweb 模式)*
-- **"AnkiWeb 登录失效"**：Cookie 已过期，请运行 `uv run update_cookie.py` 更新 `ANKI_WEB_COOKIE`。
+- **"AnkiWeb 登录失效"**：Cookie 已过期。  
+  如果你是本地 `.env` 部署，请运行 `uv run update_cookie.py` 更新 `ANKI_WEB_COOKIE`。  
+  如果你是 dpanel 环境变量部署，请在本地浏览器获取新 Cookie 后，回到 dpanel 修改 `ANKI_WEB_COOKIE` 并重新部署容器。
 - **"未能找到牌组"**：确认 `.env` 中的 `ANKI_DECK_NAME` 与 AnkiWeb 上的牌组名称完全一致（区分大小写和空格）。
 - **"页面加载超时"**：可能是网络问题或 AnkiWeb 页面结构已更新，请检查 VPS 的网络连通性。
 
 ### 5. 程序报错“Cookie 无效”？
-欧路或 AnkiWeb 的 Cookie 在一段时间后会自动过期。最快的解决办法是运行 `uv run update_cookie.py`，选择对应的 Cookie 类型并粘贴最新值即可。本地环境也可以使用 `uv run login.py` 打开浏览器重新登录获取欧路 Cookie。
+欧路或 AnkiWeb 的 Cookie 在一段时间后会自动过期。
+
+- 如果你是本地 `.env` 部署，最快的解决办法是运行 `uv run update_cookie.py`
+- 如果你是 dpanel 环境变量部署，请在本地浏览器获取新的 Cookie 后，回到 dpanel 修改对应环境变量，并重新部署容器
+
+本地环境也可以使用 `uv run login.py` 打开浏览器重新登录获取欧路 Cookie。
 
 ### 6. 容器里首次启动就提示缺少 `last_run_time.txt`？
 
