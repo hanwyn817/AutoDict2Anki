@@ -11,6 +11,13 @@ logger = logging.getLogger(__name__)
 # 每张卡片之间的间隔秒数，防止被限流
 CARD_ADD_INTERVAL = 2
 
+# 兼容 Linux 容器 / root 环境下的 Chromium 启动。
+CHROMIUM_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+]
+
 # 会话级错误标记：在 add_card 返回的 error 中携带此前缀时，调用方应中止整批处理
 SESSION_ERROR_PREFIX = "[SESSION_ERROR]"
 
@@ -92,8 +99,16 @@ class AnkiWebSession:
         if not config.ANKIWEB_COOKIE:
             return "未配置 ANKIWEB_COOKIE，无法使用 AnkiWeb 同步模式。"
 
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=True)
+        try:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch(
+                headless=True,
+                args=CHROMIUM_LAUNCH_ARGS,
+            )
+        except Exception as exc:
+            self.close()
+            return f"启动 Chromium 失败: {exc}"
+
         self._context = self._browser.new_context(
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
         )
