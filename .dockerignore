@@ -1,0 +1,17 @@
+.git
+.gitignore
+.idea
+.pytest_cache
+.venv
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.env
+data/
+last_run_time.txt
+failed_words_queue.json
+result.txt
+test_main.log
+resources/*.mdx
+resources/*.mdd

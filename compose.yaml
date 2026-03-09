@@ -1,0 +1,25 @@
+services:
+  autodict2anki:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autodict2anki
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ANKI_SYNC_METHOD: ankiweb
+      DATA_DIR: /app/data
+      CURSOR_FILE_PATH: /app/data/last_run_time.txt
+      FAILED_QUEUE_FILE_PATH: /app/data/failed_words_queue.json
+      RESULT_FILE_PATH: /app/data/result.txt
+      SYNC_INTERVAL_HOURS: 12
+      # 首次部署时可设置成过去时间，容器会自动初始化 last_run_time.txt。
+      # 初始化完成并生成游标文件后，可以移除这一项。
+      INITIAL_CURSOR_TIME: "2025-01-01 00:00:00"
+      # 如果使用容器内词典，保持下面路径；若不挂载词典且依赖 AI 回退，可删除这两项。
+      MDX_FILE_PATH: /app/resources/Collins COBUILD (CN).mdx
+      MDD_FILE_PATH: /app/resources/Collins COBUILD (CN).mdd
+    volumes:
+      - ./data:/app/data
+      - ./resources:/app/resources:ro

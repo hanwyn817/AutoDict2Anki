@@ -22,8 +22,9 @@ from notification import sc_send
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CURSOR_FILE_PATH = "last_run_time.txt"
-FAILED_QUEUE_FILE_PATH = "failed_words_queue.json"
+CURSOR_FILE_PATH = config.CURSOR_FILE_PATH
+FAILED_QUEUE_FILE_PATH = config.FAILED_QUEUE_FILE_PATH
+RESULT_FILE_PATH = config.RESULT_FILE_PATH
 RETRYABLE_FAILURE_KINDS_FOR_IMMEDIATE_RETRY = {"ai_request_failed", "ankiwrite_failed"}
 
 
@@ -70,6 +71,9 @@ def _parse_cursor_file_content(content: str) -> Tuple[datetime.datetime, Optiona
 
 
 def _atomic_write_text(file_path: str, content: str) -> None:
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     temp_file_path = f"{file_path}.tmp"
     with open(temp_file_path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -219,11 +223,11 @@ def get_first_fatal_result(results: List[ProcessResult]) -> Optional[ProcessResu
 
 def process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progress: str = "") -> ProcessResult:
     """获取单词定义并添加到 Anki。"""
+    definition = None
     try:
         definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
     except FileNotFoundError as exc:
-        logger.error("MDX 文件不存在: %s", exc)
-        return _build_fatal_failure(word, str(exc), "config_error")
+        logger.warning("MDX 文件不存在，将回退到 AI 释义，word=%s, error=%s", word.uuid, exc)
     except Exception as exc:
         logger.error("词典查询失败，word=%s, error=%s", word.uuid, exc)
         return _build_retryable_failure(word, f"词典查询失败: {exc}", "dictionary_lookup_failed")
@@ -458,8 +462,9 @@ def write_result(
     start_time: datetime.datetime,
     end_time: datetime.datetime,
     deck_name: str,
-    result_file_path: str = "result.txt",
+    result_file_path: Optional[str] = None,
 ) -> None:
+    target_result_path = result_file_path or RESULT_FILE_PATH
     historical_summary = summarize_results(historical_results)
     new_summary = summarize_results(new_results)
 
@@ -476,9 +481,13 @@ def write_result(
     logger.info("失败队列总数: %s", len(failed_queue_words))
     logger.info("Job completed at %s", end_time.strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("Execution time: %s", end_time - start_time)
-    logger.info("运行结果已保存至 %s", result_file_path)
+    logger.info("运行结果已保存至 %s", target_result_path)
 
-    with open(result_file_path, "w", encoding="utf-8") as f:
+    result_parent_dir = os.path.dirname(target_result_path)
+    if result_parent_dir:
+        os.makedirs(result_parent_dir, exist_ok=True)
+
+    with open(target_result_path, "w", encoding="utf-8") as f:
         f.write(f"目标牌组: {deck_name}\n")
         f.write(f"历史失败重试成功: {historical_recovered}\n")
         f.write(f"历史失败仍失败: {historical_still_failed}\n")
@@ -535,6 +544,22 @@ def set_last_sync_cursor(run_time: datetime.datetime, run_uuid: Optional[str]) -
     _atomic_write_text(CURSOR_FILE_PATH, json.dumps(payload, ensure_ascii=False))
 
 
+def ensure_initial_cursor_file() -> None:
+    if os.path.exists(CURSOR_FILE_PATH):
+        return
+
+    if not config.INITIAL_CURSOR_TIME:
+        return
+
+    initial_cursor = parse_datetime_flexible(config.INITIAL_CURSOR_TIME)
+    if not initial_cursor:
+        raise ValueError("INITIAL_CURSOR_TIME 格式不正确，无法解析为时间")
+    if initial_cursor > datetime.datetime.now():
+        raise ValueError("INITIAL_CURSOR_TIME 晚于当前时间，请改为过去时间")
+
+    _atomic_write_text(CURSOR_FILE_PATH, config.INITIAL_CURSOR_TIME)
+
+
 def _send_fatal_failure(title: str, reason: str) -> None:
     logger.error(reason)
     sc_send(title, reason)
@@ -550,9 +575,10 @@ def _handle_fatal_results(results: List[ProcessResult], default_message: str) ->
 
 def job() -> None:
     try:
+        ensure_initial_cursor_file()
         last_sync_cursor = get_last_sync_cursor()
-    except Exception:
-        _send_fatal_failure("AutoDict2Anki 运行失败", "last_run_time.txt 中的游标格式不正确，请修正后重试。")
+    except Exception as exc:
+        _send_fatal_failure("AutoDict2Anki 运行失败", f"last_run_time.txt 中的游标格式不正确，请修正后重试。错误: {exc}")
         return
 
     if not last_sync_cursor:
@@ -680,8 +706,8 @@ if __name__ == "__main__":
     import sys
 
     if "--daemon" in sys.argv:
-        logger.info("启动守护进程模式 (每 12 小时执行一次)...")
-        schedule.every(12).hours.do(job)
+        logger.info("启动守护进程模式 (每 %s 小时执行一次)...", config.SYNC_INTERVAL_HOURS)
+        schedule.every(config.SYNC_INTERVAL_HOURS).hours.do(job)
         job()
         while True:
             schedule.run_pending()

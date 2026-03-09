@@ -3,6 +3,8 @@
 ## 项目简介
 AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌组的工具。它支持从欧路词典获取生词，通过本地 MDX/MDD 词典或 AI 进行释义提取补充，并自动添加到 Anki，帮助用户高效构建个人词库。最新版本集成了 DeepSeek AI (通过 SiliconFlow) 作为强大的释义 fallback 服务，能够提供具有真实语境且符合特定英语考试要求的例句，并配合 Jinja2 进行 HTML 排版生成精致的单词卡片。
 
+> 如果你计划部署到 Linux VPS / Docker / dpanel，推荐使用 `ANKI_SYNC_METHOD="ankiweb"`，不要使用依赖本地桌面 Anki 的 `ankiconnect` 模式。
+
 ## 主要功能
 - **自动化同步**: 自动获取欧路词典生词本中的新单词，无需手动导出。
 - **双引擎同步 Anki**:
@@ -23,6 +25,7 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
   ```
 - 时间必须为过去的某一时刻，不能晚于当前时间。
 - 每次成功拉取单词并同步至 Anki 后，程序会自动更新该文件为 JSON 格式的最新同步游标（包含 `last_addtime` 和 `last_word_uuid`）。
+- 容器部署时也可以通过环境变量 `INITIAL_CURSOR_TIME` 在首次启动时自动创建该文件，避免手工进入容器初始化。
 
 ## 依赖环境
 - 本项目使用 `uv` 管理虚拟环境和依赖包
@@ -81,9 +84,18 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
      ANKI_WEB_COOKIE="your_anki_web_cookie_here" # 仅在 ankiweb 模式时生效
      ANKI_NOTE_TYPE="基础" # 笔记类型
      ANKI_DECK_NAME="Manki's Daily"
+
+     # 容器部署建议
+     DATA_DIR="/app/data"
+     CURSOR_FILE_PATH="/app/data/last_run_time.txt"
+     FAILED_QUEUE_FILE_PATH="/app/data/failed_words_queue.json"
+     RESULT_FILE_PATH="/app/data/result.txt"
+     SYNC_INTERVAL_HOURS="12"
+     INITIAL_CURSOR_TIME="2025-01-01 00:00:00" # 仅首次部署建议填写
      ```
 
-   - **准备本地词典:** 如果你使用本地词典（如大英汉、柯林斯等），请将 `.mdx` 和 `.mdd` 资源文件放置在 `resources/` 目录下，并确保与 `.env` 中配置的路径一致。
+   - **准备本地词典:** 如果你是直接在本机运行项目，请将 `.mdx` 和 `.mdd` 资源文件放置在项目根目录的 `resources/` 目录下，并确保与 `.env` 中配置的路径一致。  
+     如果你是通过 Docker / dpanel 部署，请看后文“Docker / dpanel 部署”章节，那里说的 `resources/` 指的是 **VPS 宿主机上的目录**，再挂载到容器内的 `/app/resources`。
 
 4. **确保 AnkiConnect 插件就绪** *(仅 `ANKI_SYNC_METHOD="ankiconnect"` 模式需要)*
    - 打开您的 Anki 客户端，并在后台保持运行。
@@ -108,7 +120,7 @@ uv run main.py
 程序将从生词本拉取增量单词，自动查询 MDX 或请求 AI 释义，并根据 `.env` 中 `ANKI_SYNC_METHOD` 的设置推送到 AnkiConnect（本地）或 AnkiWeb（网页端）。运行结果会自动汇总输出到 `result.txt` 以及终端日志中。
 
 ### 3. VPS 守护进程模式
-若需在服务器端挂机实现自动循环同步，可以通过 `--daemon` 参数启动。启动后会**立即执行一次**同步任务，之后每 **12 小时**自动再次执行。
+若需在服务器端挂机实现自动循环同步，可以通过 `--daemon` 参数启动。启动后会**立即执行一次**同步任务，之后每隔 `SYNC_INTERVAL_HOURS` 小时自动再次执行，默认 `12` 小时。
 
 > **前提：** 请确保 `.env` 中已设置 `ANKI_SYNC_METHOD="ankiweb"` 并配置了有效的 `ANKI_WEB_COOKIE`。
 
@@ -116,6 +128,106 @@ uv run main.py
 uv run main.py --daemon
 ```
 *建议配合 `nohup` 或 `tmux` 使用，以保证终端关闭后任务依然在后台执行。*
+
+## Docker / dpanel 部署
+
+项目已经提供了以下容器部署文件：
+
+- `Dockerfile`
+- `compose.yaml`
+- `docker/entrypoint.sh`
+
+推荐部署方式是让容器长期运行 `uv run python main.py --daemon`，并把运行时状态文件持久化到宿主机。
+
+### 1. 在 VPS 宿主机上准备目录
+
+这里的“准备目录”，指的是在 **Linux VPS 宿主机** 上创建目录，不是在容器里手动创建。
+
+如果你的项目部署目录是 `/opt/AutoDict2Anki`，那么可以这样准备：
+
+```bash
+cd /opt/AutoDict2Anki
+mkdir -p data resources
+```
+
+- `data/` 是 **VPS 宿主机目录**，用于保存运行时状态文件，例如 `last_run_time.txt`、`failed_words_queue.json`、`result.txt`
+- `resources/` 也是 **VPS 宿主机目录**，如果你要使用本地词典，就把 `.mdx/.mdd` 文件放到这里
+
+例如，宿主机目录结构应该类似这样：
+
+```text
+/opt/AutoDict2Anki/
+├── compose.yaml
+├── .env
+├── data/
+└── resources/
+    ├── Collins COBUILD (CN).mdx
+    └── Collins COBUILD (CN).mdd
+```
+
+之后，`compose.yaml` 会把：
+
+- 宿主机 `./data` 挂载到容器 `/app/data`
+- 宿主机 `./resources` 挂载到容器 `/app/resources`
+
+所以容器里的：
+
+```env
+MDX_FILE_PATH="/app/resources/Collins COBUILD (CN).mdx"
+MDD_FILE_PATH="/app/resources/Collins COBUILD (CN).mdd"
+```
+
+本质上就是在读取 **宿主机 `resources/` 目录里的词典文件**。
+
+如果你完全依赖 AI 释义，不使用本地词典，那么可以不准备 `resources/`。当前程序在词典文件不存在时，会自动回退到 AI 释义，不会因为缺少 `.mdx/.mdd` 而直接中断容器；前提是 `AI_API_KEY` 已正确配置。
+
+### 2. 配置 `.env`
+
+容器模式最关键的是：
+
+```env
+ANKI_SYNC_METHOD="ankiweb"
+ANKI_WEB_COOKIE="your_anki_web_cookie_here"
+DATA_DIR="/app/data"
+CURSOR_FILE_PATH="/app/data/last_run_time.txt"
+FAILED_QUEUE_FILE_PATH="/app/data/failed_words_queue.json"
+RESULT_FILE_PATH="/app/data/result.txt"
+SYNC_INTERVAL_HOURS="12"
+INITIAL_CURSOR_TIME="2025-01-01 00:00:00"
+MDX_FILE_PATH="/app/resources/Collins COBUILD (CN).mdx"
+MDD_FILE_PATH="/app/resources/Collins COBUILD (CN).mdd"
+```
+
+说明：
+
+- `INITIAL_CURSOR_TIME` 只在 `last_run_time.txt` 不存在时生效，建议填一个过去时间用于首次启动
+- 首次启动成功并生成游标文件后，可以删除 `INITIAL_CURSOR_TIME`
+- 若使用本地词典，请先把词典文件放到 **VPS 宿主机的 `resources/` 目录**
+- 若暂时还没上传词典文件，只要 `AI_API_KEY` 可用，程序也会自动回退到 AI 释义，不会中断容器
+
+### 3. 本地 Docker Compose 启动
+
+```bash
+docker compose up -d --build
+```
+
+查看日志：
+
+```bash
+docker compose logs -f autodict2anki
+```
+
+### 4. dpanel 部署建议
+
+如果你使用 dpanel 这类容器面板，直接导入仓库里的 `compose.yaml` 即可，然后做这几件事：
+
+- 把 `.env` 中的敏感变量填到面板环境变量或服务器上的 `.env` 文件中
+- 将宿主机 `data/` 挂载到容器 `/app/data`
+- 如需本地词典，将宿主机 `resources/` 挂载到容器 `/app/resources`
+- 首次部署时设置一个过去时间的 `INITIAL_CURSOR_TIME`
+- 确保 VPS 能访问 `my.eudic.net`、AI API 服务地址以及 `ankiuser.net`
+
+这个项目不需要对外暴露端口，因为它本质上是后台定时任务，不是 Web 服务。
 
 ## 常见问题 FAQ
 
@@ -137,6 +249,12 @@ uv run main.py --daemon
 
 ### 5. 程序报错“Cookie 无效”？
 欧路或 AnkiWeb 的 Cookie 在一段时间后会自动过期。最快的解决办法是运行 `uv run update_cookie.py`，选择对应的 Cookie 类型并粘贴最新值即可。本地环境也可以使用 `uv run login.py` 打开浏览器重新登录获取欧路 Cookie。
+
+### 6. 容器里首次启动就提示缺少 `last_run_time.txt`？
+
+- 检查是否已经挂载了 `/app/data`
+- 检查 `INITIAL_CURSOR_TIME` 是否设置为一个过去时间，例如 `2025-01-01 00:00:00`
+- 如果游标文件已经生成，后续不要反复修改它，程序会自行推进
 
 ## 致谢
 本项目的本地 MDX/MDD 词典解析功能使用了 [mdict-analysis](https://github.com/hehonghui/mdict-analysis) 库。
