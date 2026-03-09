@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 # 每张卡片之间的间隔秒数，防止被限流
 CARD_ADD_INTERVAL = 2
 
+# 会话级错误标记：在 add_card 返回的 error 中携带此前缀时，调用方应中止整批处理
+SESSION_ERROR_PREFIX = "[SESSION_ERROR]"
+
 
 def _parse_cookie_string(cookie_str: str, domain: str) -> list[dict]:
     """Parse a raw cookie string into the format expected by Playwright."""
@@ -53,11 +56,20 @@ def _select_svelte_dropdown(page: Page, label: str, target_value: str) -> str | 
     dropdown_input.fill(target_value)
 
     try:
-        option = page.locator(f'div.list-item .item:has-text("{target_value}")').first
-        option.wait_for(state="visible", timeout=3000)
-        option.click()
-    except Exception:
-        return f"未能在 AnkiWeb 中找到名为 '{target_value}' 的 {label}。"
+        # 等待下拉列表出现后，用精确文本匹配避免误匹配子串
+        page.wait_for_selector('div.list-item .item', timeout=3000)
+        options = page.locator('div.list-item .item').all()
+        matched = None
+        for opt in options:
+            if opt.inner_text().strip() == target_value:
+                matched = opt
+                break
+        if matched is None:
+            available = [o.inner_text().strip() for o in options]
+            return f"未能在 AnkiWeb 中找到名为 '{target_value}' 的 {label}。现有选项: {available}"
+        matched.click()
+    except Exception as e:
+        return f"切换 {label} 时发生错误: {e}"
 
     return None
 
@@ -122,7 +134,7 @@ class AnkiWebSession:
         self._playwright = None
         self._dropdown_selected = False
 
-    def add_card(self, front: str, back: str, deck_name: str) -> Dict[str, Any]:
+    def add_card(self, front: str, back: str, deck_name: str, progress: str = "") -> Dict[str, Any]:
         """
         在已打开的浏览器会话中添加一张卡片。
 
@@ -138,14 +150,17 @@ class AnkiWebSession:
         page = self._page
 
         try:
+            if progress:
+                logger.info("[%s] 正在处理: %s", progress, front)
+
             # 仅在首张卡片时检查并切换 Type 和 Deck（之后页面会保持选择）
             if not self._dropdown_selected:
                 type_error = _select_svelte_dropdown(page, 'Type', config.ANKI_NOTE_TYPE)
                 if type_error:
-                    return {"error": type_error}
+                    return {"error": f"{SESSION_ERROR_PREFIX} {type_error}"}
                 deck_error = _select_svelte_dropdown(page, 'Deck', deck_name)
                 if deck_error:
-                    return {"error": deck_error}
+                    return {"error": f"{SESSION_ERROR_PREFIX} {deck_error}"}
                 self._dropdown_selected = True
 
             # Fill the front field

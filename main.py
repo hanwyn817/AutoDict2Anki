@@ -11,7 +11,7 @@ import requests
 import config
 from ai import formatted_word_data
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
-from anki_web import AnkiWebSession, CARD_ADD_INTERVAL
+from anki_web import AnkiWebSession, CARD_ADD_INTERVAL, SESSION_ERROR_PREFIX
 from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
 from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
@@ -66,7 +66,7 @@ def _parse_cursor_file_content(content: str) -> Tuple[datetime.datetime, Optiona
     return legacy_time, None
 
 
-def process_word(word: WordEntry, deck_name: str, ankiweb_session=None) -> ProcessResult:
+def process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progress: str = "") -> ProcessResult:
     """获取单词定义并添加到 Anki。"""
     try:
         definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
@@ -89,7 +89,7 @@ def process_word(word: WordEntry, deck_name: str, ankiweb_session=None) -> Proce
 
     try:
         if ankiweb_session:
-            add_result = ankiweb_session.add_card(word.uuid, definition, deck_name)
+            add_result = ankiweb_session.add_card(word.uuid, definition, deck_name, progress=progress)
         else:
             add_result = add_card_to_anki_by_ankiConnect(word.uuid, definition, deck_name)
     except requests.exceptions.ConnectionError:
@@ -143,14 +143,23 @@ def process_words(new_words: List[WordEntry], deck_name: str) -> List[ProcessRes
             return [ProcessResult(status="failed", word=w.uuid, reason=open_err) for w in new_words]
 
     try:
+        total = len(new_words)
         for i, word in enumerate(new_words):
+            progress = f"{i + 1}/{total}"
             try:
                 can_add = True
                 if not use_ankiweb:
                     can_add = can_add_card(word.uuid, deck_name)
 
                 if can_add:
-                    results.append(process_word(word, deck_name, ankiweb_session))
+                    result = process_word(word, deck_name, ankiweb_session, progress=progress)
+                    results.append(result)
+                    # 如果是会话级错误（如 Cookie 失效、牌组不存在），中止整批
+                    if use_ankiweb and result.status == "failed" and result.reason and SESSION_ERROR_PREFIX in result.reason:
+                        logger.error("会话级错误，中止批处理: %s", result.reason)
+                        remaining = new_words[i + 1:]
+                        results.extend(ProcessResult(status="failed", word=w.uuid, reason="上一张卡片出现会话级错误，已中止") for w in remaining)
+                        break
                 else:
                     results.append(
                         ProcessResult(
@@ -319,7 +328,10 @@ def job() -> None:
         results = process_words(new_words, config.ANKI_DECK_NAME)
         job_success = True
     except requests.exceptions.ConnectionError:
-        logger.error("连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。")
+        if config.ANKI_SYNC_METHOD == "ankiweb":
+            logger.error("连接 AnkiWeb 失败，请检查 VPS 网络连通性。")
+        else:
+            logger.error("连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。")
         return
     except Exception as exc:
         logger.error("Error fetching new words: %s", exc)
