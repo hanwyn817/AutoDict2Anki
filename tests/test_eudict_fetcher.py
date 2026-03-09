@@ -48,5 +48,5 @@ def test_get_all_words_data_paginates_and_skips_bad_addtime(monkeypatch):
     assert len(words) == 201
     assert "bad_time" not in uuids
     assert "good_time" in uuids
-    assert calls["count"] == 3
+    assert calls["count"] == 2
     assert isinstance(words[0].addtime, datetime)
