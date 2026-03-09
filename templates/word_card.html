@@ -2,50 +2,51 @@
     <style>
         @import url(_collinsEC_wrap.css);
     </style>
+    <link href="_collinsEC.css" rel="stylesheet" type="text/css" />
 
-    <head>
-        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-        <link href="collinsEC.css" rel="stylesheet" type="text/css" />
-    </head>
+    <a name="page_top"></a>
 
-    <body>
-        <a name="page_top"></a>
+    <div class="C1_word_header">
+        <span class="C1_word_header_word">{{ word }}</span>
+        {% if phonetic %}
+        <span class="C1_phonetic">[{{ phonetic }}]</span>
+        {% endif %}
+        <span class="C1_color_bar">
+            <ul>
+                <li class="C1_cabr_1"></li>
+                <li class="C1_cabr_2"></li>
+                <li class="C1_cabr_3"></li>
+                <li class="C1_cabr_4"></li>
+                <li class="C1_cabr_5"></li>
+                <li class="C1_cabr_6"></li>
+            </ul>
+        </span>
+    </div>
 
-        <div class="C1_word_header">
-            <span class="C1_word_header_word">{{ word }}</span>
-            <span class="C1_color_bar">
-                <ul>
-                    <li class="C1_cabr_1"></li>
-                    <li class="C1_cabr_2"></li>
-                    <li class="C1_cabr_3"></li>
-                    <li class="C1_cabr_4"></li>
-                    <li class="C1_cabr_5"></li>
-                    <li class="C1_cabr_6"></li>
-                </ul>
-            </span>
-        </div>
-
-        <div class="tab_content" id="dict_tab_101" style="display:block">
-            <div class="part_main">
-                <div class="collins_content">
-                    {% for meaning in meanings %}
-                    <div class="C1_explanation_item">
-                        <div class="C1_explanation_box">
-                            <span class="C1_item_number"><a href="entry://#page_top">{{ loop.index }}</a></span>
-                            <span class="C1_text_blue">{{ meaning.meaning }}</span>
-                        </div>
-                        <ul>
-                            {% for example in meaning.examples %}
-                            <li>
-                                <p class="C1_sentence_en">{{ example.english }}</p>
-                                <p>{{ example.translation }}</p>
-                            </li>
-                            {% endfor %}
-                        </ul>
+    <div class="tab_content" id="dict_tab_101" style="display:block">
+        <div class="part_main">
+            <div class="collins_content">
+                {% for meaning in meanings %}
+                <div class="C1_explanation_item">
+                    <div class="C1_explanation_box">
+                        <span class="C1_item_number"><a href="entry://#page_top">{{ loop.index }}</a></span>
+                        <span class="C1_text_blue">{{ meaning.meaning }}</span>
                     </div>
-                    {% endfor %}
+                    <ul>
+                        {% for example in meaning.examples %}
+                        <li>
+                            {% if example.english %}
+                            <p class="C1_sentence_en">{{ example.english }}</p>
+                            {% endif %}
+                            {% if example.translation %}
+                            <p>{{ example.translation }}</p>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
                 </div>
+                {% endfor %}
             </div>
         </div>
-    </body>
+    </div>
 </div>
