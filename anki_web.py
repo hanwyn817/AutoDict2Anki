@@ -1,10 +1,12 @@
 from log_utils import get_logger
 import time
+import re
 from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import sync_playwright, Page, BrowserContext, Browser
 
 import config
+from note_types import NoteTypes, unsupported_reason
 
 logger = get_logger(__name__)
 
@@ -42,43 +44,44 @@ def _parse_cookie_string(cookie_str: str, domain: str) -> list[dict]:
     return cookies
 
 
+def _dropdown_row(page: Page, label: str):
+    """按表单标签精确定位，避免牌组名或选项文本干扰 Type / Deck 匹配。"""
+    caption = page.locator(".col-form-label, label").filter(
+        has_text=re.compile(r"^\s*" + re.escape(label) + r"\s*[:：]?\s*$")
+    )
+    row = page.locator("div.form-group.row").filter(has=caption).filter(
+        has=page.locator('input[type="text"]')
+    )
+    if row.count() != 1 or row.locator('input[type="text"]').count() != 1:
+        raise RuntimeError(f"无法唯一定位 AnkiWeb 的 {label} 下拉框，页面结构可能已变更")
+    return row
+
+
 def _select_svelte_dropdown(page: Page, label: str, target_value: str) -> str | None:
-    """
-    检查并切换 AnkiWeb 页面上的 svelte-select 下拉框。
-    label: 行标签文本，如 'Type' 或 'Deck'。
-    target_value: 目标值。
-    返回 None 表示成功，否则返回错误信息。
-    """
-    row = page.locator('div.form-group.row', has_text=label)
-    selected_item = row.locator('div.selected-item')
-
-    current_value = selected_item.inner_text().strip()
-    if current_value == target_value:
-        logger.debug("当前 %s 已经是 '%s'，无需切换。", label, target_value)
-        return None
-
-    logger.debug("当前 %s 为 '%s'，需要切换到 '%s'", label, current_value, target_value)
-    dropdown_input = row.locator('input[type="text"]')
-    dropdown_input.click()
-    dropdown_input.fill(target_value)
-
+    """按精确表单标签定位，并在该下拉框内匹配目标选项。"""
     try:
-        # 等待下拉列表出现后，用精确文本匹配避免误匹配子串
-        page.wait_for_selector('div.list-item .item', timeout=3000)
-        options = page.locator('div.list-item .item').all()
-        matched = None
-        for opt in options:
-            if opt.inner_text().strip() == target_value:
-                matched = opt
-                break
-        if matched is None:
-            available = [o.inner_text().strip() for o in options]
-            return f"未能在 AnkiWeb 中找到名为 '{target_value}' 的 {label}。现有选项: {available}"
-        matched.click()
-    except Exception as e:
-        return f"切换 {label} 时发生错误: {e}"
+        row = _dropdown_row(page, label)
+        current_value = row.locator('div.selected-item').inner_text().strip()
+        if current_value == target_value:
+            logger.debug("当前 %s 已经是 '%s'，无需切换。", label, target_value)
+            return None
 
-    return None
+        logger.debug("当前 %s 为 '%s'，需要切换到 '%s'", label, current_value, target_value)
+        dropdown_input = row.locator('input[type="text"]')
+        dropdown_input.click()
+        dropdown_input.fill(target_value)
+        options = row.locator('div.list-item .item')
+        options.first.wait_for(state="visible", timeout=3000)
+        available = []
+        for option in options.all():
+            name = option.inner_text().strip()
+            available.append(name)
+            if name == target_value:
+                option.click()
+                return None
+        return f"未能在 AnkiWeb 中找到名为 '{target_value}' 的 {label}。现有选项: {available}"
+    except Exception as exc:
+        return f"切换 {label} 时发生错误: {exc}"
 
 
 class AnkiWebSession:
@@ -149,6 +152,59 @@ class AnkiWebSession:
         self._playwright = None
         self._dropdown_selected = False
 
+    def get_catalog(self):
+        """只读取添加页上的现有牌组和笔记类型。"""
+        if not self._page:
+            raise RuntimeError("AnkiWeb 会话未打开")
+        catalog = []
+        for label in ("Deck", "Type"):
+            row = _dropdown_row(self._page, label)
+            entry = row.locator('input[type="text"]')
+            entry.click()
+            entry.fill("")
+            options = row.locator('div.list-item .item')
+            options.first.wait_for(state="visible", timeout=3000)
+            names = [item.inner_text().strip() for item in options.all()]
+            entry.press("Escape")
+            catalog.append(list(dict.fromkeys(names)))
+        models = NoteTypes()
+        original = _dropdown_row(self._page, "Type").locator('div.selected-item').inner_text().strip()
+        try:
+            for name in catalog[1]:
+                error = _select_svelte_dropdown(self._page, "Type", name)
+                if error:
+                    raise RuntimeError(error)
+                fields = self.note_fields()
+                reason = unsupported_reason(name, fields)
+                if reason:
+                    models.excluded[name] = reason
+                else:
+                    models[name] = fields
+        finally:
+            self._dropdown_selected = False
+            error = _select_svelte_dropdown(self._page, "Type", original)
+            if error:
+                raise RuntimeError(f"恢复笔记类型失败：{error}")
+        return catalog[0], models
+
+    def note_fields(self):
+        # 等待本次选择触发的 Svelte 渲染完成，再读取当前字段及标签。
+        self._page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        rows = self._page.locator('div.form-group.row').filter(has=self._page.locator('div.form-control.field'))
+        return [row.locator('.col-form-label, label').inner_text().strip() for row in rows.all()]
+
+    def validate_target(self, deck_name, note_type):
+        """执行前校验选择，避免向多字段笔记类型写入不完整内容。"""
+        for label, value in (("Type", note_type), ("Deck", deck_name)):
+            error = _select_svelte_dropdown(self._page, label, value)
+            if error:
+                raise ValueError(error)
+        fields = self.note_fields()
+        reason = unsupported_reason(note_type, fields)
+        if reason:
+            raise ValueError(f"笔记类型 {note_type} 不可用：{reason}，请重新选择")
+        return fields
+
     def add_card(self, front: str, back: str, deck_name: str, progress: str = "") -> Dict[str, Any]:
         """
         在已打开的浏览器会话中添加一张卡片。
@@ -170,12 +226,10 @@ class AnkiWebSession:
 
             # 仅在首张卡片时检查并切换 Type 和 Deck（之后页面会保持选择）
             if not self._dropdown_selected:
-                type_error = _select_svelte_dropdown(page, 'Type', config.ANKI_NOTE_TYPE)
-                if type_error:
-                    return {"error": f"{SESSION_ERROR_PREFIX} {type_error}"}
-                deck_error = _select_svelte_dropdown(page, 'Deck', deck_name)
-                if deck_error:
-                    return {"error": f"{SESSION_ERROR_PREFIX} {deck_error}"}
+                try:
+                    self.validate_target(deck_name, config.ANKI_NOTE_TYPE)
+                except Exception as exc:
+                    return {"error": f"{SESSION_ERROR_PREFIX} {exc}"}
                 self._dropdown_selected = True
 
             # Fill the front field

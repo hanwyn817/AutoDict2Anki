@@ -105,8 +105,8 @@ def formatted_word_data(word, api_key):
     word_json_data = json.loads(word_json_data)
 
     template_dir = os.path.join(os.path.dirname(__file__), 'templates')
-    env = Environment(loader=FileSystemLoader(template_dir))
-    template = env.get_template('word_card.html')
+    env = Environment(loader=FileSystemLoader(template_dir), autoescape=True)
+    template = env.get_template('word_card_simple.html' if config.CARD_STYLE == 'simple' else 'word_card.html')
 
     # 异常处理函数，验证JSON格式
     def validate_json(data):

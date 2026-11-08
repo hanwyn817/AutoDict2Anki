@@ -1,0 +1,7 @@
+<article style="font-family: sans-serif; line-height: 1.7; text-align: left; max-width: 42em; margin: auto">
+<h2>{{ word }}</h2>
+{% for meaning in meanings %}
+<section><p><strong>{{ loop.index }}. {{ meaning.meaning }}</strong></p>
+{% for example in meaning.examples %}<p>{{ example.english }}<br><span style="color: #777">{{ example.translation }}</span></p>{% endfor %}
+</section>{% endfor %}
+</article>

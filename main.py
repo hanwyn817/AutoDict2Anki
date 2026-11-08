@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 import config
+from events import emit
 from ai import formatted_word_data
 from anki import add_card_to_anki_by_ankiConnect, can_add_card
 from anki_web import AnkiWebSession, CARD_ADD_INTERVAL, SESSION_ERROR_PREFIX
@@ -220,6 +221,7 @@ def get_first_fatal_result(results: List[ProcessResult]) -> Optional[ProcessResu
 
 
 def _log_word_result(result: ProcessResult, started_at: Optional[float] = None) -> None:
+    emit("result", result=result)
     elapsed = time.perf_counter() - started_at if started_at is not None else 0.0
     if result.status == "added":
         logger.info("添加成功，总耗时 %.1f 秒", elapsed)
@@ -251,10 +253,13 @@ def process_word(
 def _process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progress: str = "") -> ProcessResult:
     """获取单词定义并添加到 Anki。"""
     lookup_started = time.perf_counter()
-    logger.info("正在查询本地词典")
+    if config.DEFINITION_STRATEGY != "ai_only":
+        emit("stage", stage="正在查询本地词典")
+        logger.info("正在查询本地词典")
     definition = None
     try:
-        definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
+        if config.DEFINITION_STRATEGY != "ai_only":
+            definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
     except FileNotFoundError:
         warned_paths = get_log_context().get("missing_dictionary_paths", set())
         if config.MDX_FILE_PATH not in warned_paths:
@@ -266,12 +271,19 @@ def _process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progres
     if definition:
         logger.info("本地词典命中，耗时 %.1f 秒", time.perf_counter() - lookup_started)
 
+    if not definition and config.DEFINITION_STRATEGY == "dictionary_only":
+        return _build_retryable_failure(word, "本地词典未找到释义", "definition_empty")
+
     if not definition:
         if not config.AI_API_KEY:
             return _build_fatal_failure(word, "AI_API_KEY 未配置，无法回退到 AI 查询。", "config_error")
         try:
+            emit("stage", stage="正在生成 AI 释义")
             ai_started = time.perf_counter()
-            logger.info("本地词典无可用释义，正在调用 AI 处理（模型: %s）", config.AI_MODEL)
+            if config.DEFINITION_STRATEGY == "ai_only":
+                logger.info("正在调用 AI 处理（模型: %s）", config.AI_MODEL)
+            else:
+                logger.info("本地词典无可用释义，正在调用 AI 处理（模型: %s）", config.AI_MODEL)
             definition = formatted_word_data(word.uuid, config.AI_API_KEY)
         except requests.exceptions.RequestException as exc:
             return _build_retryable_failure(word, f"AI 释义失败: {exc}", "ai_request_failed")
@@ -285,6 +297,7 @@ def _process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progres
     if not definition:
         return _build_retryable_failure(word, "无法获取到释义", "definition_empty")
 
+    emit("stage", stage="正在写入 Anki")
     write_started = time.perf_counter()
     logger.info("正在写入 %s", "AnkiWeb" if ankiweb_session else "AnkiConnect")
     try:
@@ -368,6 +381,7 @@ def _process_words(words: List[WordEntry], deck_name: str) -> List[ProcessResult
             progress = f"{index + 1}/{total}"
             with log_context(word=word.uuid, progress=progress):
                 started_at = time.perf_counter()
+                emit("stage", stage="正在检查重复")
                 logger.info("开始处理")
                 try:
                     can_add = True
@@ -766,17 +780,44 @@ def job() -> None:
     sc_send(title, desp)
 
 
+def cli(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description="AutoDict2Anki：交互制卡与自动同步")
+    parser.add_argument("mode", nargs="?", choices=["app", "sync", "daemon"], default="sync")
+    parser.add_argument("--daemon", action="store_true", dest="legacy_daemon", help="兼容旧版守护进程入口")
+    parser.add_argument("--verbose", action="store_true", help="交互模式显示详细逐行日志")
+    parser.add_argument("--profile", help="使用已保存的任务配置名称")
+    args = parser.parse_args(argv)
+    if args.legacy_daemon and args.mode == "app":
+        parser.error("app 不能与 --daemon 同时使用")
+    if args.mode == "app":
+        from interactive import run_app
+        return run_app(verbose=args.verbose, profile_name=args.profile)
+    from profiles import Profile, activate
+    try:
+        profile = Profile.load(args.profile) if args.profile else None
+    except (ValueError, TypeError, OSError) as exc:
+        parser.error(str(exc))
+    with activate(profile):
+        configure_logging()
+        if args.mode == "daemon" or args.legacy_daemon:
+            logger.info("启动守护进程模式 (每 %s 小时执行一次)...", config.SYNC_INTERVAL_HOURS)
+            schedule.every(config.SYNC_INTERVAL_HOURS).hours.do(job)
+            job()
+            try:
+                while True:
+                    schedule.run_pending()
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                logger.info("守护进程已停止")
+            finally:
+                schedule.clear()
+        else:
+            job()
+    return 0
+
+
 if __name__ == "__main__":
     import sys
-
-    configure_logging()
-
-    if "--daemon" in sys.argv:
-        logger.info("启动守护进程模式 (每 %s 小时执行一次)...", config.SYNC_INTERVAL_HOURS)
-        schedule.every(config.SYNC_INTERVAL_HOURS).hours.do(job)
-        job()
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-    else:
-        job()
+    sys.modules.setdefault("main", sys.modules[__name__])
+    raise SystemExit(cli())

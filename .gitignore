@@ -141,3 +141,7 @@ Thumbs.db
 # Project specific
 last_run_time.txt
 result.txt
+
+# Named task configurations and interactive task records
+profiles/
+data/

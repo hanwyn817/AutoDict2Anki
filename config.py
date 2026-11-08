@@ -48,3 +48,9 @@ USER_TARGET_EXAM = os.environ.get("USER_TARGET_EXAM", "雅思")
 # 推送配置
 SERVERCHAN_SENDKEY = os.environ.get("SERVERCHAN_SENDKEY", "")
 
+
+# 制卡选项（交互任务可以临时覆盖，自动任务可通过环境变量配置）。
+DEFINITION_STRATEGY = os.environ.get("DEFINITION_STRATEGY", "dictionary_first")
+CARD_STYLE = os.environ.get("CARD_STYLE", "current")
+ANKI_FRONT_FIELD = os.environ.get("ANKI_FRONT_FIELD", "正面")
+ANKI_BACK_FIELD = os.environ.get("ANKI_BACK_FIELD", "背面")

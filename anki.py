@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 from http_utils import request_with_retry
 import config
+from note_types import NoteTypes, unsupported_reason
 import datetime
 
 ANKI_CONNECT_URL = config.ANKI_CONNECT_URL
@@ -39,8 +40,8 @@ def can_add_card(target_word: str, target_deck_name: str) -> bool:
                     "deckName": target_deck_name,
                     "modelName": config.ANKI_NOTE_TYPE,
                     "fields": {
-                        "正面": target_word,
-                        "背面": "",
+                        config.ANKI_FRONT_FIELD: target_word,
+                        config.ANKI_BACK_FIELD: "",
                     },
                     "options": {
                         "allowDuplicate": False,
@@ -77,10 +78,10 @@ def add_card_to_anki_by_ankiConnect(front: str, back: str, deck_name: str) -> Di
         "params": {
             "note": {
                 "deckName": deck_name,
-                "modelName": "基础",
+                "modelName": config.ANKI_NOTE_TYPE,
                 "fields": {
-                    "正面": front,
-                    "背面": back,
+                    config.ANKI_FRONT_FIELD: front,
+                    config.ANKI_BACK_FIELD: back,
                 },
                 "options": {
                     "allowDuplicate": False,
@@ -97,3 +98,25 @@ def add_card_to_anki_by_ankiConnect(front: str, back: str, deck_name: str) -> Di
     }
 
     return _invoke_anki_connect(payload)
+
+
+def invoke(action, **params):
+    response = _invoke_anki_connect({"action": action, "version": 6, "params": params})
+    if response.get("error") is not None:
+        raise RuntimeError(f"AnkiConnect {action} 失败: {response['error']}")
+    return response.get("result")
+
+
+def get_catalog():
+    """读取牌组和可映射的双字段笔记类型，不写入 Anki。"""
+    decks = invoke("deckNames")
+    models = NoteTypes()
+    for name in invoke("modelNames"):
+        fields = invoke("modelFieldNames", modelName=name)
+        templates = invoke("modelTemplates", modelName=name) if len(fields) == 2 else None
+        reason = unsupported_reason(name, fields, templates)
+        if reason:
+            models.excluded[name] = reason
+        else:
+            models[name] = fields
+    return decks, models
