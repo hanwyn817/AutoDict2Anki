@@ -1,6 +1,10 @@
 import datetime
 import json
+import logging
 from datetime import datetime
+
+import pytest
+import requests
 
 import main
 from main import (
@@ -13,6 +17,63 @@ from main import (
     save_failed_words_queue,
 )
 from models import ProcessResult, WordEntry
+
+
+@pytest.mark.parametrize("missing_file", [False, True])
+def test_ai_progress_logs_follow_processing_stages(monkeypatch, caplog, missing_file):
+    caplog.set_level(logging.INFO, logger="main")
+
+    def fake_lookup(word, path):
+        assert "[1/2][test] 开始处理" in caplog.messages
+        if missing_file:
+            raise FileNotFoundError("mdx missing")
+        return None
+
+    def fake_ai(word, api_key):
+        assert any("[1/2][test] 本地词典无可用释义，正在调用 AI 处理" in message for message in caplog.messages)
+        assert not any("完成" in message for message in caplog.messages)
+        return "<div>ai definition</div>"
+
+    def fake_add(*args, **kwargs):
+        assert any("[1/2][test] AI 释义生成并校验完成" in message for message in caplog.messages)
+        assert not any("添加成功" in message for message in caplog.messages)
+        return {"error": None}
+
+    monkeypatch.setattr(main, "get_word_definition", fake_lookup)
+    monkeypatch.setattr(main, "formatted_word_data", fake_ai)
+    monkeypatch.setattr(main, "add_card_to_anki_by_ankiConnect", fake_add)
+    monkeypatch.setattr(main.config, "AI_API_KEY", "test-key")
+
+    result = process_word(
+        WordEntry(id=1, uuid="test", exp="", addtime=datetime.now()),
+        "Deck",
+        progress="1/2",
+    )
+
+    assert result.status == "added"
+    assert caplog.messages[-1].startswith("[1/2][test] 添加成功，总耗时 ")
+
+
+@pytest.mark.parametrize("raises_error", [False, True])
+def test_failed_ai_does_not_log_completion(monkeypatch, caplog, raises_error):
+    caplog.set_level(logging.INFO, logger="main")
+    monkeypatch.setattr(main, "get_word_definition", lambda *args: None)
+    monkeypatch.setattr(main.config, "AI_API_KEY", "test-key")
+
+    def fake_ai(*args):
+        if raises_error:
+            raise requests.exceptions.Timeout("timeout")
+        return ""
+
+    monkeypatch.setattr(main, "formatted_word_data", fake_ai)
+
+    result = process_word(
+        WordEntry(id=1, uuid="test", exp="", addtime=datetime.now()), "Deck",
+    )
+
+    assert result.status == "retryable_failed"
+    assert any("正在调用 AI" in message for message in caplog.messages)
+    assert not any("完成" in message for message in caplog.messages)
 
 
 def test_process_word_falls_back_to_ai_when_mdx_missing(monkeypatch):
@@ -116,7 +177,8 @@ def test_save_and_load_failed_words_queue_round_trip(tmp_path, monkeypatch):
     assert [item["uuid"] for item in payload] == ["a", "b"]
 
 
-def test_job_does_not_process_historical_queue_when_no_new_words(monkeypatch):
+def test_job_does_not_process_historical_queue_when_no_new_words(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     process_retry_called = {"called": False}
 
     monkeypatch.setattr(main, "get_last_sync_cursor", lambda: (datetime(2025, 1, 1, 10, 0, 0), "a"))
@@ -137,6 +199,7 @@ def test_job_does_not_process_historical_queue_when_no_new_words(monkeypatch):
     main.job()
 
     assert process_retry_called["called"] is False
+    assert "没有新词，本轮结束；历史失败队列未重试（1 个）" in caplog.text
 
 
 def test_job_saves_failed_queue_before_advancing_cursor(monkeypatch):

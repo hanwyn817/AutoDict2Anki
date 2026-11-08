@@ -1,6 +1,5 @@
 import datetime
 import json
-import logging
 import os
 import schedule
 import time
@@ -16,11 +15,10 @@ from datetime_utils import format_datetime_for_storage, parse_datetime_flexible
 from eudict_fetcher import get_all_words_data, is_cookie_valid
 from mdx_dict import get_word_definition
 from models import ProcessResult, WordEntry
+from log_utils import configure_logging, get_logger, get_log_context, log_context
 from notification import sc_send
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CURSOR_FILE_PATH = config.CURSOR_FILE_PATH
 FAILED_QUEUE_FILE_PATH = config.FAILED_QUEUE_FILE_PATH
@@ -221,49 +219,87 @@ def get_first_fatal_result(results: List[ProcessResult]) -> Optional[ProcessResu
     return None
 
 
-def process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progress: str = "") -> ProcessResult:
+def _log_word_result(result: ProcessResult, started_at: Optional[float] = None) -> None:
+    elapsed = time.perf_counter() - started_at if started_at is not None else 0.0
+    if result.status == "added":
+        logger.info("添加成功，总耗时 %.1f 秒", elapsed)
+    elif result.status == "skipped_duplicate":
+        logger.info("重复跳过: %s，总耗时 %.1f 秒", result.reason, elapsed)
+    elif result.status == "fatal_failed":
+        logger.error("处理中止: %s，总耗时 %.1f 秒", result.reason, elapsed)
+    else:
+        logger.warning("处理失败: %s，总耗时 %.1f 秒", result.reason, elapsed)
+
+
+def process_word(
+    word: WordEntry, deck_name: str, ankiweb_session=None, progress: str = "",
+    _started_at: Optional[float] = None,
+) -> ProcessResult:
+    """获取释义并写入 Anki；独立调用和批量调用共用日志上下文。"""
+    with log_context(
+        word=word.uuid, progress=progress,
+        missing_dictionary_paths=get_log_context().get("missing_dictionary_paths", set()),
+    ):
+        started_at = _started_at if _started_at is not None else time.perf_counter()
+        if _started_at is None:
+            logger.info("开始处理")
+        result = _process_word(word, deck_name, ankiweb_session, progress)
+        _log_word_result(result, started_at)
+        return result
+
+
+def _process_word(word: WordEntry, deck_name: str, ankiweb_session=None, progress: str = "") -> ProcessResult:
     """获取单词定义并添加到 Anki。"""
+    lookup_started = time.perf_counter()
+    logger.info("正在查询本地词典")
     definition = None
     try:
         definition = get_word_definition(word.uuid, config.MDX_FILE_PATH)
-    except FileNotFoundError as exc:
-        logger.warning("MDX 文件不存在，将回退到 AI 释义，word=%s, error=%s", word.uuid, exc)
+    except FileNotFoundError:
+        warned_paths = get_log_context().get("missing_dictionary_paths", set())
+        if config.MDX_FILE_PATH not in warned_paths:
+            logger.warning("本地词典文件不存在，本批次将按需回退到 AI: %s", config.MDX_FILE_PATH)
+            warned_paths.add(config.MDX_FILE_PATH)
     except Exception as exc:
-        logger.error("词典查询失败，word=%s, error=%s", word.uuid, exc)
         return _build_retryable_failure(word, f"词典查询失败: {exc}", "dictionary_lookup_failed")
+
+    if definition:
+        logger.info("本地词典命中，耗时 %.1f 秒", time.perf_counter() - lookup_started)
 
     if not definition:
         if not config.AI_API_KEY:
             return _build_fatal_failure(word, "AI_API_KEY 未配置，无法回退到 AI 查询。", "config_error")
         try:
+            ai_started = time.perf_counter()
+            logger.info("本地词典无可用释义，正在调用 AI 处理（模型: %s）", config.AI_MODEL)
             definition = formatted_word_data(word.uuid, config.AI_API_KEY)
         except requests.exceptions.RequestException as exc:
-            logger.error("AI 请求失败，word=%s, error=%s", word.uuid, exc)
             return _build_retryable_failure(word, f"AI 释义失败: {exc}", "ai_request_failed")
         except (json.JSONDecodeError, KeyError, TypeError, ValueError, IndexError) as exc:
-            logger.error("AI 结果解析失败，word=%s, error=%s", word.uuid, exc)
             return _build_retryable_failure(word, f"AI 释义解析失败: {exc}", "ai_parse_failed")
         except Exception as exc:
-            logger.error("AI 释义失败，word=%s, error=%s", word.uuid, exc)
             return _build_retryable_failure(word, f"AI 释义失败: {exc}", "ai_request_failed")
+        if definition:
+            logger.info("AI 释义生成并校验完成，耗时 %.1f 秒", time.perf_counter() - ai_started)
 
     if not definition:
         return _build_retryable_failure(word, "无法获取到释义", "definition_empty")
 
+    write_started = time.perf_counter()
+    logger.info("正在写入 %s", "AnkiWeb" if ankiweb_session else "AnkiConnect")
     try:
         if ankiweb_session:
             add_result = ankiweb_session.add_card(word.uuid, definition, deck_name, progress=progress)
         else:
             add_result = add_card_to_anki_by_ankiConnect(word.uuid, definition, deck_name)
     except requests.exceptions.ConnectionError as exc:
-        logger.error("AnkiConnect 未连接，word=%s, error=%s", word.uuid, exc)
         return _build_fatal_failure(word, "连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。", "ankiconnect_unavailable")
     except Exception as exc:
-        logger.error("写入 Anki 失败，word=%s, error=%s", word.uuid, exc)
         return _build_retryable_failure(word, f"写入 Anki 失败: {exc}", "ankiwrite_failed")
 
     add_error = add_result.get("error") if isinstance(add_result, dict) else "Anki 返回格式错误"
     if not add_error:
+        logger.debug("Anki 写入完成，耗时 %.1f 秒", time.perf_counter() - write_started)
         return _build_process_result(status="added", word=word.uuid)
 
     add_error = str(add_error)
@@ -297,75 +333,93 @@ def get_recent_words_list(cookie: str, count: int = 10) -> List[WordEntry]:
 
 
 def process_words(words: List[WordEntry], deck_name: str) -> List[ProcessResult]:
-    """处理单词并返回处理结果列表。"""
+    """处理一个批次，并为所有阶段提供统一的日志上下文。"""
     if not words:
         return []
+    with log_context(
+        batch=get_log_context().get("batch", "单词处理"),
+        missing_dictionary_paths=get_log_context().get("missing_dictionary_paths", set()),
+    ):
+        return _process_words(words, deck_name)
 
+
+def _process_words(words: List[WordEntry], deck_name: str) -> List[ProcessResult]:
     results: List[ProcessResult] = []
     use_ankiweb = config.ANKI_SYNC_METHOD == "ankiweb"
     ankiweb_session = None
+    total = len(words)
 
     if use_ankiweb:
+        logger.info("正在建立 AnkiWeb 会话")
         ankiweb_session = AnkiWebSession()
         open_err = ankiweb_session.open()
         if open_err:
             logger.error("AnkiWeb 会话启动失败: %s", open_err)
-            return [
-                _build_fatal_failure(word, open_err, "ankiweb_session_failed")
-                for word in words
-            ]
+            for index, word in enumerate(words):
+                result = _build_fatal_failure(word, open_err, "ankiweb_session_failed")
+                with log_context(word=word.uuid, progress=f"{index + 1}/{total}"):
+                    _log_word_result(result)
+                results.append(result)
+            return results
+        logger.info("AnkiWeb 会话已就绪")
 
     try:
-        total = len(words)
         for index, word in enumerate(words):
             progress = f"{index + 1}/{total}"
-            try:
-                can_add = True
-                if not use_ankiweb:
-                    can_add = can_add_card(word.uuid, deck_name)
-            except requests.exceptions.ConnectionError:
-                result = _build_fatal_failure(
-                    word,
-                    "连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。",
-                    "ankiconnect_unavailable",
-                )
-                results.append(result)
-                results.extend(_build_aborted_results(words[index + 1:], "上一张卡片出现致命错误，已中止"))
-                break
-            except Exception as exc:
-                logger.error("处理前检查失败，word=%s, error=%s", word.uuid, exc)
-                result = _build_fatal_failure(word, f"写入前检查失败: {exc}", "config_error")
-                results.append(result)
-                results.extend(_build_aborted_results(words[index + 1:], "上一张卡片出现致命错误，已中止"))
-                break
-
-            if not can_add:
-                results.append(
-                    _build_process_result(
-                        status="skipped_duplicate",
-                        word=word.uuid,
-                        reason=f"牌组 {deck_name} 中已存在",
+            with log_context(word=word.uuid, progress=progress):
+                started_at = time.perf_counter()
+                logger.info("开始处理")
+                try:
+                    can_add = True
+                    if not use_ankiweb:
+                        logger.info("正在检查 AnkiConnect 牌组中是否重复")
+                        can_add = can_add_card(word.uuid, deck_name)
+                except requests.exceptions.ConnectionError:
+                    result = _build_fatal_failure(
+                        word, "连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。",
+                        "ankiconnect_unavailable",
                     )
-                )
-            else:
-                result = process_word(word, deck_name, ankiweb_session, progress=progress)
+                    _log_word_result(result, started_at)
+                except Exception as exc:
+                    result = _build_fatal_failure(word, f"写入前检查失败: {exc}", "config_error")
+                    _log_word_result(result, started_at)
+                else:
+                    if not can_add:
+                        result = _build_process_result(
+                            status="skipped_duplicate", word=word.uuid,
+                            reason=f"牌组 {deck_name} 中已存在",
+                        )
+                        _log_word_result(result, started_at)
+                    else:
+                        result = process_word(
+                            word, deck_name, ankiweb_session, progress=progress,
+                            _started_at=started_at,
+                        )
                 results.append(result)
-                if is_fatal_result(result):
-                    logger.error("致命错误，中止批处理: %s", result.reason)
-                    results.extend(_build_aborted_results(words[index + 1:], "上一张卡片出现致命错误，已中止"))
-                    break
 
-            if use_ankiweb and index < len(words) - 1 and len(results) == index + 1:
+            if is_fatal_result(result):
+                logger.error("发生致命错误，中止批次；剩余 %s 个词未处理", total - index - 1)
+                aborted = _build_aborted_results(words[index + 1:], "上一张卡片出现致命错误，已中止")
+                for offset, skipped in enumerate(aborted, start=index + 2):
+                    with log_context(word=skipped.word, progress=f"{offset}/{total}"):
+                        logger.warning("未处理，批次已中止: %s", skipped.reason)
+                results.extend(aborted)
+                break
+
+            if use_ankiweb and index < total - 1:
+                logger.debug("AnkiWeb 提交间隔，等待 %s 秒", CARD_ADD_INTERVAL)
                 time.sleep(CARD_ADD_INTERVAL)
     finally:
         if ankiweb_session:
             ankiweb_session.close()
+            logger.debug("AnkiWeb 会话已关闭")
 
     return results
 
 
 def process_retry_queue(words: List[WordEntry], deck_name: str) -> Tuple[List[ProcessResult], List[WordEntry]]:
-    results = process_words(words, deck_name)
+    with log_context(batch="历史重试"):
+        results = process_words(words, deck_name)
     remaining_words = [word for word, result in zip(words, results) if should_enqueue_result(result)]
     return results, dedupe_words_by_uuid(remaining_words)
 
@@ -374,7 +428,8 @@ def process_new_words_with_retry(
     words: List[WordEntry],
     deck_name: str,
 ) -> Tuple[List[ProcessResult], List[WordEntry]]:
-    initial_results = process_words(words, deck_name)
+    with log_context(batch="新增词", missing_dictionary_paths=set()):
+        initial_results = process_words(words, deck_name)
     final_results_by_uuid = {result.word: result for result in initial_results}
 
     if has_fatal_result(initial_results):
@@ -392,7 +447,9 @@ def process_new_words_with_retry(
             final_failed_words.append(word)
 
     if retry_candidates:
-        retry_results = process_words(retry_candidates, deck_name)
+        logger.info("开始立即重试，共 %s 个词: %s", len(retry_candidates), format_word_preview([word.uuid for word in retry_candidates]))
+        with log_context(batch="立即重试"):
+            retry_results = process_words(retry_candidates, deck_name)
         for retry_word, retry_result in zip(retry_candidates, retry_results):
             final_results_by_uuid[retry_word.uuid] = retry_result
 
@@ -479,9 +536,7 @@ def write_result(
     logger.info("本次新增跳过重复: %s", skipped_count)
     logger.info("本次新增最终失败: %s", new_failure_count)
     logger.info("失败队列总数: %s", len(failed_queue_words))
-    logger.info("Job completed at %s", end_time.strftime("%Y-%m-%d %H:%M:%S"))
-    logger.info("Execution time: %s", end_time - start_time)
-    logger.info("运行结果已保存至 %s", target_result_path)
+    logger.info("历史失败仍失败: %s", historical_still_failed)
 
     result_parent_dir = os.path.dirname(target_result_path)
     if result_parent_dir:
@@ -521,6 +576,9 @@ def write_result(
             f"{', '.join(word.uuid for word in failed_queue_words)}\n"
         )
         f.write(f"执行时间: {end_time - start_time}\n")
+
+    logger.info("运行结果已保存至 %s", target_result_path)
+    logger.info("任务处理结束，总耗时 %s", end_time - start_time)
 
 
 def get_last_sync_cursor() -> Optional[Tuple[datetime.datetime, Optional[str]]]:
@@ -574,6 +632,7 @@ def _handle_fatal_results(results: List[ProcessResult], default_message: str) ->
 
 
 def job() -> None:
+    logger.info("开始同步任务，方式: %s，目标牌组: %s", config.ANKI_SYNC_METHOD, config.ANKI_DECK_NAME)
     try:
         ensure_initial_cursor_file()
         last_sync_cursor = get_last_sync_cursor()
@@ -603,20 +662,20 @@ def job() -> None:
     )
     start_time = datetime.datetime.now()
 
+    logger.info("正在从欧路词典拉取新增单词")
+    fetch_started = time.perf_counter()
     try:
         new_words = get_new_words_list(last_sync_cursor)
     except requests.exceptions.ConnectionError:
-        if config.ANKI_SYNC_METHOD == "ankiweb":
-            _send_fatal_failure("AutoDict2Anki 运行失败", "连接 AnkiWeb 失败，请检查 VPS 网络连通性。")
-        else:
-            _send_fatal_failure("AutoDict2Anki 运行失败", "连接 AnkiConnect 失败，请确认 Anki 已启动且插件可用。")
+        _send_fatal_failure("AutoDict2Anki 运行失败", "连接欧路词典失败，请检查 my.eudic.net 的网络连通性。")
         return
     except Exception as exc:
         _send_fatal_failure("AutoDict2Anki 运行失败", f"获取新单词失败: {exc}")
         return
 
+    logger.info("新增单词拉取完成，共 %s 个，耗时 %.1f 秒；历史失败队列 %s 个", len(new_words), time.perf_counter() - fetch_started, len(historical_failed_words))
     if not new_words:
-        logger.info("未获取到自上次运行时间以来的新单词，任务终止。")
+        logger.info("没有新词，本轮结束；历史失败队列未重试（%s 个），总耗时 %s", len(historical_failed_words), datetime.datetime.now() - start_time)
         return
 
     historical_results: List[ProcessResult] = []
@@ -642,6 +701,7 @@ def job() -> None:
 
     try:
         save_failed_words_queue(final_failed_queue)
+        logger.info("失败队列已保存，共 %s 个词: %s", len(final_failed_queue), format_word_preview([word.uuid for word in final_failed_queue]) or "无")
     except Exception as exc:
         _send_fatal_failure("AutoDict2Anki 运行失败", f"保存 failed_words_queue.json 失败: {exc}")
         return
@@ -659,15 +719,19 @@ def job() -> None:
         return
 
     end_time = datetime.datetime.now()
-    write_result(
-        historical_results,
-        new_results,
-        final_failed_queue,
-        progress_word,
-        start_time,
-        end_time,
-        config.ANKI_DECK_NAME,
-    )
+    try:
+        write_result(
+            historical_results,
+            new_results,
+            final_failed_queue,
+            progress_word,
+            start_time,
+            end_time,
+            config.ANKI_DECK_NAME,
+        )
+    except OSError as exc:
+        _send_fatal_failure("AutoDict2Anki 运行失败", f"保存运行结果失败: {exc}")
+        return
 
     historical_recovered = sum(1 for r in historical_results if r.status == "added")
     new_success_count = sum(1 for r in new_results if r.status == "added")
@@ -704,6 +768,8 @@ def job() -> None:
 
 if __name__ == "__main__":
     import sys
+
+    configure_logging()
 
     if "--daemon" in sys.argv:
         logger.info("启动守护进程模式 (每 %s 小时执行一次)...", config.SYNC_INTERVAL_HOURS)

@@ -1,9 +1,9 @@
-import logging
+from log_utils import get_logger
 import re
 import requests
 import config
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 def sc_send(title: str, desp: str = '') -> None:
     sendkey = config.SERVERCHAN_SENDKEY

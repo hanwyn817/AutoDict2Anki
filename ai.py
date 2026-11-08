@@ -1,12 +1,12 @@
 import json
 import os
-import logging
+from log_utils import get_logger
 from jinja2 import Environment, FileSystemLoader
 
 from http_utils import request_with_retry
 import config
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 AI_TIMEOUT = 60
 AI_MAX_RETRIES = 3
@@ -84,6 +84,7 @@ def get_word_data_ai(word, api_key):
         headers=headers,
         timeout=AI_TIMEOUT,
         max_retries=AI_MAX_RETRIES,
+        request_label="AI",
     )
     response.raise_for_status()
     return response.text

@@ -17,6 +17,7 @@ def _invoke_anki_connect(payload: Dict[str, Any]) -> Dict[str, Any]:
         headers=HEADERS,
         timeout=5,
         max_retries=3,
+        request_label="AnkiConnect",
         backoff_factor=0.2,
         retry_status_codes=(502, 503, 504),
     )

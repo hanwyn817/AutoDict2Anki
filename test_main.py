@@ -8,20 +8,19 @@ from dotenv import load_dotenv
 from eudict_fetcher import is_cookie_valid
 from login import get_cookie_via_browser
 from main import get_recent_words_list, process_words, write_result
+from log_utils import configure_logging, get_logger
 
 # 加载 .env 文件中的环境变量
 load_dotenv()
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+configure_logging(
     handlers=[
         logging.FileHandler("test_main.log", encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def run_job(target_deck_name: str, count: int) -> None:

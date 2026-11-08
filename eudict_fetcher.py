@@ -1,4 +1,4 @@
-import logging
+from log_utils import get_logger
 import os
 from typing import Any, Dict, List, Optional
 
@@ -8,7 +8,7 @@ from datetime_utils import parse_datetime_flexible
 from http_utils import request_with_retry
 from models import WordEntry
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 HTTP_TIMEOUT = 10
 HTTP_MAX_RETRIES = 3
@@ -50,6 +50,7 @@ def is_cookie_valid(cookie: str) -> bool:
             headers=headers,
             timeout=HTTP_TIMEOUT,
             max_retries=HTTP_MAX_RETRIES,
+            request_label="欧路词典",
         )
     except requests.exceptions.RequestException as exc:
         logger.error("测试 cookie 时出错: %s", exc)
@@ -108,6 +109,7 @@ def get_all_words_data(cookie: str, page_size: int = 200, max_pages: Optional[in
         if max_pages is not None and page_count >= max_pages:
             break
 
+        logger.debug("正在拉取欧路词典第 %s 页", page_count + 1)
         params = _build_request_params(start=start, length=page_size)
         response = request_with_retry(
             "GET",
@@ -116,6 +118,7 @@ def get_all_words_data(cookie: str, page_size: int = 200, max_pages: Optional[in
             headers=headers,
             timeout=HTTP_TIMEOUT,
             max_retries=HTTP_MAX_RETRIES,
+            request_label="欧路词典",
         )
         response.raise_for_status()
 

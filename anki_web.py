@@ -1,4 +1,4 @@
-import logging
+from log_utils import get_logger
 import time
 from typing import Any, Dict, List, Optional
 
@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright, Page, BrowserContext, Browser
 
 import config
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 每张卡片之间的间隔秒数，防止被限流
 CARD_ADD_INTERVAL = 2
@@ -54,10 +54,10 @@ def _select_svelte_dropdown(page: Page, label: str, target_value: str) -> str | 
 
     current_value = selected_item.inner_text().strip()
     if current_value == target_value:
-        logger.info("当前 %s 已经是 '%s'，无需切换。", label, target_value)
+        logger.debug("当前 %s 已经是 '%s'，无需切换。", label, target_value)
         return None
 
-    logger.info("当前 %s 为 '%s'，需要切换到 '%s'", label, current_value, target_value)
+    logger.debug("当前 %s 为 '%s'，需要切换到 '%s'", label, current_value, target_value)
     dropdown_input = row.locator('input[type="text"]')
     dropdown_input.click()
     dropdown_input.fill(target_value)
@@ -119,7 +119,7 @@ class AnkiWebSession:
 
         self._page = self._context.new_page()
 
-        logger.info("Navigate to https://ankiuser.net/add")
+        logger.debug("正在打开 AnkiWeb 添加页面")
         self._page.goto("https://ankiuser.net/add", wait_until="networkidle")
 
         if "login" in self._page.url.lower() or "account" in self._page.url.lower():
@@ -166,7 +166,7 @@ class AnkiWebSession:
 
         try:
             if progress:
-                logger.info("[%s] 正在处理: %s", progress, front)
+                logger.debug("[%s] 正在提交到 AnkiWeb: %s", progress, front)
 
             # 仅在首张卡片时检查并切换 Type 和 Deck（之后页面会保持选择）
             if not self._dropdown_selected:
@@ -216,11 +216,11 @@ class AnkiWebSession:
                     return {"error": f"AnkiWeb 返回错误: {err_text}"}
                 return {"error": "添加卡片后未检测到预期的字段清空反馈，可能添加失败。"}
 
-            logger.info("卡片 '%s' 已成功提交到 AnkiWeb。", front)
+            logger.debug("卡片 '%s' 已成功提交到 AnkiWeb。", front)
             return {}
 
         except Exception as exc:
-            logger.error("Playwright 交互时发生错误: %s", exc)
+            logger.debug("Playwright 交互时发生错误: %s", exc)
             return {"error": f"Playwright 交互错误: {exc}"}
 
 
