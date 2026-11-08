@@ -8,7 +8,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-AI_TIMEOUT = 20
+AI_TIMEOUT = 60
 AI_MAX_RETRIES = 3
 
 def get_sys_prompt():
@@ -50,6 +50,9 @@ def get_sys_prompt():
 """
 
 def get_word_data_ai(word, api_key):
+    api_key = (api_key or "").strip()
+    if api_key.lower() == "bearer" or api_key.lower().startswith("bearer "):
+        api_key = api_key[7:].strip()
     if not api_key:
         raise ValueError("AI_API_KEY 未配置，无法调用 AI 释义服务。")
 
@@ -64,17 +67,13 @@ def get_word_data_ai(word, api_key):
             }
         ],
         "stream": False,
-        "max_tokens": 1024,
-        "stop": ["null"],
+        "max_tokens": 4096,
+        "thinking": {"type": "disabled"},
         "temperature": 0.7,
-        "top_p": 0.7,
-        "top_k": 50,
-        "frequency_penalty": 0.5,
-        "n": 1,
-        "response_format": {"type": "text"}
+        "response_format": {"type": "json_object"}
     }
     headers = {
-        "Authorization": api_key,
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 

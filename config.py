@@ -39,10 +39,10 @@ ANKI_DECK_NAME = os.environ.get("ANKI_DECK_NAME", "Manki's Daily")
 ANKI_NOTE_TYPE = os.environ.get("ANKI_NOTE_TYPE", "基础")
 ANKIWEB_COOKIE = os.environ.get("ANKIWEB_COOKIE", "") or os.environ.get("ANKI_WEB_COOKIE", "")
 
-# AI 配置
+# DeepSeek 官方 API 配置
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_API_URL = os.environ.get("AI_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
-AI_MODEL = os.environ.get("AI_MODEL", "Pro/deepseek-ai/DeepSeek-V3")
+AI_API_URL = os.environ.get("AI_API_URL", "https://api.deepseek.com/chat/completions")
+AI_MODEL = os.environ.get("AI_MODEL", "deepseek-flash")
 USER_TARGET_EXAM = os.environ.get("USER_TARGET_EXAM", "雅思")
 
 # 推送配置

@@ -1,7 +1,7 @@
 # AutoDict2Anki
 
 ## 项目简介
-AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌组的工具。它支持从欧路词典获取生词，通过本地 MDX/MDD 词典或 AI 进行释义提取补充，并自动添加到 Anki，帮助用户高效构建个人词库。最新版本集成了 DeepSeek AI (通过 SiliconFlow) 作为强大的释义 fallback 服务，能够提供具有真实语境且符合特定英语考试要求的例句，并配合 Jinja2 进行 HTML 排版生成精致的单词卡片。
+AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌组的工具。它支持从欧路词典获取生词，通过本地 MDX/MDD 词典或 AI 进行释义提取补充，并自动添加到 Anki，帮助用户高效构建个人词库。最新版本集成了 DeepSeek AI (官方 API) 作为强大的释义 fallback 服务，能够提供具有真实语境且符合特定英语考试要求的例句，并配合 Jinja2 进行 HTML 排版生成精致的单词卡片。
 
 > 如果你计划部署到 Linux VPS / Docker / dpanel，推荐使用 `ANKI_SYNC_METHOD="ankiweb"`，不要使用依赖本地桌面 Anki 的 `ankiconnect` 模式。
 
@@ -10,7 +10,7 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
 - **双引擎同步 Anki**:
   - **AnkiConnect (本地)**: 将生成的单词和释义自动精准同步到指定的 Anki 本地牌组并且自带重复检查。
   - **AnkiWeb (VPS/无头)**: 内置 Playwright 无头浏览器，直接在 VPS 或服务器环境自动化提交到网页版 AnkiWeb（`https://ankiuser.net/add`），便于 24 小时无人值守。
-- **混合释义引擎**: 优先查找本地 MDX 词典（如柯林斯词典），查不到时自动调用 AI API (支持 DeepSeek-V3 等) 补全释义。
+- **混合释义引擎**: 优先查找本地 MDX 词典（如柯林斯词典），查不到时自动调用 DeepSeek 官方 API 补全释义。
 - **AI 智能例句生成**: 能够根据配置的考试类型（如：雅思、托福、考研等）生成符合考试场景的中英文例句。
 - **精美卡片模板**: 内置 `Jinja2` HTML 模板引擎 (`templates/word_card.html`)，自动将单词、多重释义及例句排版为美观的 Anki 卡片。
 - **统一 Cookie 更新工具**: 提供可在纯命令行终端下运行的 `update_cookie.py`，适用于 VPS 服务器无需系统图形界面就能轻松更新各类失效的 Cookie。
@@ -68,10 +68,10 @@ AutoDict2Anki 是一个自动化单词采集、释义获取并同步到 Anki 牌
      EUDICT_WEB_COOKIE="你的欧路网页版Cookie"
      UEDICT_API="欧陆开放API授权信息(如有)"
      
-     # AI 服务配置 (默认使用 SiliconFlow)
-     AI_API_URL="https://api.siliconflow.cn/v1/chat/completions"
-     AI_API_KEY="Bearer sk-your-siliconflow-api-key"
-     AI_MODEL="Pro/deepseek-ai/DeepSeek-V3"
+     # AI 服务配置 (使用 DeepSeek 官方 API)
+     AI_API_URL="https://api.deepseek.com/chat/completions"
+     AI_API_KEY="sk-your-deepseek-api-key" # 从 DeepSeek 官方平台获取，无需 Bearer 前缀
+     AI_MODEL="deepseek-flash"
      USER_TARGET_EXAM="雅思" # 决定 AI 生成例句的场景，如雅思、托福、CET6等
      
      # 本地词典配置
@@ -249,7 +249,7 @@ docker compose logs -f autodict2anki
 请检查 `resources/` 下是否存在您在 `.env` 中指定的同名 `.mdx`/`.mdd` 文件。如果没有本地词典，程序将自动走到 AI 释义分支。
 
 ### 2. "AI 释义失败 / 接口报错"？
-确认 `AI_API_KEY` 是有效的（注意开头是否带有 `Bearer `）。默认采用的是 SiliconFlow 平台，你可以根据需要将 `AI_API_URL` 更换成兼容 OpenAI 格式的其他提供商。
+确认 `AI_API_KEY` 是从 [DeepSeek 官方平台](https://platform.deepseek.com/api_keys) 获取的有效密钥，且账户余额充足。直接填写 `sk-...` 即可，程序会自动添加 `Bearer ` 前缀，也兼容已有的带前缀配置。`AI_API_URL` 默认为 `https://api.deepseek.com/chat/completions`，`AI_MODEL` 默认为 `deepseek-flash`，可按需改为官方支持的其他模型（如 `deepseek-v4-pro`）。从 SiliconFlow 迁移时，需要同时更新 `.env` 中的密钥、接口地址和模型名称；旧平台密钥不能用于 DeepSeek 官方接口。调用格式参考 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/)。
 
 ### 3. Anki 返回 "AnkiConnect canAddNotes 失败"？ *(ankiconnect 模式)*
 - 确认您的 Anki 已经处于运行状态。
