@@ -189,6 +189,47 @@ def test_note_fields_reads_actual_field_labels(dropdown_page):
     assert session.note_fields() == ["Front", "Back"]
 
 
+def test_note_fields_snapshots_labels_when_field_count_shrinks(dropdown_page, monkeypatch):
+    # 模拟切换类型：若分多次浏览器调用读取，在调用间将八个字段缩减为两个。
+    # 逐行定位会在第三行超时；一次 DOM 读取应返回完整的原始快照。
+    dropdown_page.set_default_timeout(500)
+    dropdown_page.evaluate('''() => {
+        const rows = [...document.querySelectorAll('.form-group.row')].slice(2);
+        for (let i = 2; i < 8; i++) {
+            const row = rows[0].cloneNode(true);
+            row.querySelector('.col-form-label').textContent = `Field ${i}`;
+            document.body.appendChild(row);
+            rows.push(row);
+        }
+    }''')
+    from playwright.sync_api import Locator
+
+    shrink_fields = '''() => {
+        [...document.querySelectorAll('.form-group.row')].slice(4).forEach(row => row.remove());
+    }'''
+    original_inner_text = Locator.inner_text
+
+    def read_then_shrink(locator, *args, **kwargs):
+        text = original_inner_text(locator, *args, **kwargs)
+        dropdown_page.evaluate(shrink_fields)
+        return text
+
+    monkeypatch.setattr(Locator, "inner_text", read_then_shrink)
+    session = anki_web.AnkiWebSession()
+    session._page = dropdown_page
+    assert session.note_fields() == ["Front", "Back"] + [f"Field {i}" for i in range(2, 8)]
+    dropdown_page.evaluate(shrink_fields)
+    assert session.note_fields() == ["Front", "Back"]
+
+
+def test_note_fields_reports_missing_label_without_locator_timeout(dropdown_page):
+    dropdown_page.locator('.col-form-label', has_text="Back").evaluate('(el) => el.remove()')
+    session = anki_web.AnkiWebSession()
+    session._page = dropdown_page
+    with pytest.raises(Exception, match="AnkiWeb 字段缺少标签"):
+        session.note_fields()
+
+
 def test_field_named_type_does_not_confuse_type_dropdown(dropdown_page):
     dropdown_page.locator('div.form-group.row').nth(2).locator('.col-form-label').evaluate('(el) => el.textContent = "Type"')
     row = anki_web._dropdown_row(dropdown_page, "Type")

@@ -191,7 +191,16 @@ class AnkiWebSession:
         # 等待本次选择触发的 Svelte 渲染完成，再读取当前字段及标签。
         self._page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
         rows = self._page.locator('div.form-group.row').filter(has=self._page.locator('div.form-control.field'))
-        return [row.locator('.col-form-label, label').inner_text().strip() for row in rows.all()]
+        # Locator.all() 返回按序号重新匹配的定位器，而非 DOM 快照。切换类型时
+        # 字段数量可能减少，逐个 inner_text() 会等待已经不存在的第 N 行。
+        # 在同一个浏览器任务里读取所有标签，避免 Svelte 更新穿插在读取之间。
+        return rows.evaluate_all("""rows => rows.map(row => {
+            const label = row.querySelector('.col-form-label, label');
+            if (!label) {
+                throw new Error('AnkiWeb 字段缺少标签，页面结构可能已变更');
+            }
+            return label.innerText.trim();
+        })""")
 
     def validate_target(self, deck_name, note_type):
         """执行前校验选择，避免向多字段笔记类型写入不完整内容。"""

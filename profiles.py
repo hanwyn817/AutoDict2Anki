@@ -80,6 +80,31 @@ def write_json(path, data):
     temporary.replace(path)
 
 
+def migrate_app_cursor(profile):
+    """将旧交互进度合入配置的共享游标，未完成任务仍可被重新采集。"""
+    import main
+    legacy_path = profile.directory / "app_cursor.json"
+    if not legacy_path.exists():
+        return
+    legacy = main._parse_cursor_file_content(legacy_path.read_text(encoding="utf-8"))
+    # 旧版交互流程即使有失败词也会推进 app 游标；后台不会读取这些任务。
+    # 从最早未完成词所在的秒重新采集，避免迁移后跨过失败词。
+    for path in (profile.directory / "tasks").glob("*.json"):
+        task = json.loads(path.read_text(encoding="utf-8"))
+        if task.get("source") != "incremental":
+            continue
+        for payload in task.get("pending", []):
+            word = main.deserialize_word_entry(payload)
+            boundary = (word.addtime, None)
+            if (boundary[0], boundary[1] or "") < (legacy[0], legacy[1] or ""):
+                legacy = boundary
+    current = main.get_last_sync_cursor()
+    if current is None or (legacy[0], legacy[1] or "") > (current[0], current[1] or ""):
+        main.set_last_sync_cursor(*legacy)
+    # 仅在共享游标持久化成功后移除旧文件，后续运行只读写共享进度。
+    legacy_path.unlink()
+
+
 @contextmanager
 def activate(profile):
     """只在当前同步任务内覆盖配置，退出后恢复，包括发生异常时。"""
@@ -103,6 +128,7 @@ def activate(profile):
             setattr(config, key, value)
         for key, value in paths.items():
             setattr(main, key, value)
+        migrate_app_cursor(profile)
         yield
     finally:
         for key, value in previous.items():

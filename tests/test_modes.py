@@ -111,19 +111,20 @@ def task_for(profile, source="manual"):
 
 
 @pytest.mark.parametrize("source", ["manual", "recent", "file", "incremental"])
-def test_task_cursor_isolation(profile, monkeypatch, source):
+def test_only_incremental_task_advances_shared_cursor(profile, monkeypatch, source):
     task = task_for(profile, source)
     path = profile.directory / "tasks" / "task.json"
     path.parent.mkdir(parents=True)
     monkeypatch.setattr(main, "process_new_words_with_retry", lambda words, deck: ([ProcessResult("added", "hello")], []))
     interactive.execute_task(path, task)
     assert task["pending"] == []
-    assert (profile.directory / "app_cursor.json").exists() == (source == "incremental")
-    assert not (profile.directory / "last_run_time.txt").exists()
+    assert (profile.directory / "last_run_time.txt").exists() == (source == "incremental")
+    assert not (profile.directory / "app_cursor.json").exists()
 
 
-def test_interruption_checkpoints_success_and_preserves_remaining(profile, monkeypatch):
-    task = task_for(profile)
+@pytest.mark.parametrize("source", ["manual", "incremental"])
+def test_interruption_checkpoints_success_and_preserves_remaining(profile, monkeypatch, source):
+    task = task_for(profile, source)
     task["pending"].append(dict(task["pending"][0], uuid="world"))
     path = profile.directory / "tasks" / "task.json"
     path.parent.mkdir(parents=True)
@@ -136,6 +137,7 @@ def test_interruption_checkpoints_success_and_preserves_remaining(profile, monke
     stored = json.loads(path.read_text())
     assert [word["uuid"] for word in stored["pending"]] == ["world"]
     assert stored["profile"]["deck"] == "Test"
+    assert not (profile.directory / "last_run_time.txt").exists()
 
 
 def test_fatal_batch_preserves_unprocessed_and_does_not_advance(profile, monkeypatch):
@@ -145,7 +147,7 @@ def test_fatal_batch_preserves_unprocessed_and_does_not_advance(profile, monkeyp
     monkeypatch.setattr(main, "process_new_words_with_retry", lambda words, deck: ([ProcessResult("fatal_failed", "hello", "connection")], []))
     interactive.execute_task(path, task)
     assert len(task["pending"]) == 1
-    assert not (profile.directory / "app_cursor.json").exists()
+    assert not (profile.directory / "last_run_time.txt").exists()
 
 
 def test_cli_sync_profile_paths(profile, monkeypatch):
@@ -204,16 +206,16 @@ def test_tty_progress_refresh_and_warning_keep_three_lines(monkeypatch):
     progress.__exit__()
 
 
-def test_retry_cannot_move_interactive_cursor_backwards(profile, monkeypatch):
+def test_retry_cannot_move_shared_cursor_backwards(profile, monkeypatch):
     from profiles import write_json
     task = task_for(profile, "incremental")
     path = profile.directory / "tasks" / "old.json"
     path.parent.mkdir(parents=True)
     newer = {"last_addtime": "2026-10-01 00:00:00", "last_word_uuid": "newer"}
-    write_json(profile.directory / "app_cursor.json", newer)
+    write_json(profile.directory / "last_run_time.txt", newer)
     monkeypatch.setattr(main, "process_new_words_with_retry", lambda *a: ([ProcessResult("added", "hello")], []))
     interactive.execute_task(path, task)
-    assert json.loads((profile.directory / "app_cursor.json").read_text()) == newer
+    assert json.loads((profile.directory / "last_run_time.txt").read_text()) == newer
 
 
 def test_catalog_excludes_multi_field_types(monkeypatch):
@@ -275,13 +277,13 @@ def test_first_incremental_defaults_to_existing_cursor(profile, monkeypatch, tmp
     def ask(label, default):
         assert default == ("" if existing == "none" else expected)
         return default or expected
-    monkeypatch.setattr(interactive, "ask", ask if existing != "app" else lambda *a: pytest.fail("existing app cursor should not prompt"))
+    monkeypatch.setattr(interactive, "ask", ask if existing not in ("app", "profile") else lambda *a: pytest.fail("existing profile cursor should not prompt"))
     timestamp = parse_datetime_flexible(expected)
     monkeypatch.setattr(main, "get_all_words_data", lambda cookie: [
         WordEntry(None, word, "", timestamp) for word in ("before", "done", "next")])
     words = interactive.fetch_words(profile, {"source": "incremental"})
     assert [word.uuid for word in words] == (["next"] if existing in ("app", "profile", "global") else ["before", "done", "next"])
-    assert not (profile.directory / "app_cursor.json").exists() or existing == "app"
+    assert not (profile.directory / "app_cursor.json").exists()
 
 
 def test_missing_default_requires_explicit_number(monkeypatch, capsys):

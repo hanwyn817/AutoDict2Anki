@@ -243,17 +243,15 @@ def fetch_words(profile, state):
     cookie = main.get_valid_cookie(cookie_value)
     if source == "recent":
         return main.get_recent_words_list(cookie, state["count"])
-    cursor_path = profile.directory / "app_cursor.json"
-    if cursor_path.exists():
-        cursor = main._parse_cursor_file_content(cursor_path.read_text(encoding="utf-8"))
-    else:
-        print("首次交互增量采集：默认承接已有同步进度，之后分别保存。")
+    with activate(profile):
+        cursor = main.get_last_sync_cursor()
+    if cursor is None:
+        print("首次增量采集：交互与后台模式将共用此配置的同步进度。")
         previous_cursor = None
-        for previous_path in (profile.directory / "last_run_time.txt", Path(main.CURSOR_FILE_PATH)):
-            if previous_path.exists():
-                previous_cursor = main._parse_cursor_file_content(previous_path.read_text(encoding="utf-8"))
-                print(f"已读取上次同步进度：{previous_path}")
-                break
+        previous_path = Path(main.CURSOR_FILE_PATH)
+        if previous_path.exists():
+            previous_cursor = main._parse_cursor_file_content(previous_path.read_text(encoding="utf-8"))
+            print(f"已读取上次同步进度：{previous_path}")
         default_time = previous_cursor[0].isoformat(sep=" ") if previous_cursor else config.INITIAL_CURSOR_TIME
         if not default_time:
             print("尚无上次同步记录，请指定首次采集的起始时间。")
@@ -266,7 +264,7 @@ def fetch_words(profile, state):
                 break
             print("请输入有效的过去时间，例如 2026-11-01 00:00:00")
     if cursor[0] > datetime.datetime.now():
-        raise ValueError("增量游标晚于当前时间，请检查 app_cursor.json")
+        raise ValueError("增量游标晚于当前时间，请检查配置目录下的 last_run_time.txt")
     words = main.get_all_words_data(cookie)
     return sorted((word for word in words if main._is_after_cursor(word, *cursor)), key=lambda w: (w.addtime, w.uuid))
 
@@ -304,13 +302,14 @@ def execute_task(path, task, verbose=False):
         if result.status not in ("added", "skipped_duplicate"):
             print(f"  {result.word}：{result.reason}")
     print(f"任务记录：{path}\n完整日志：{path.with_suffix('.log')}")
-    if task["source"] == "incremental" and task.get("cursor") and not main.has_fatal_result(results):
-        # 失败词已先存入任务记录，之后才允许推进游标；重试旧任务不得回退游标。
-        cursor_path = profile.directory / "app_cursor.json"
+    if task["source"] == "incremental" and task.get("cursor") and not task["pending"] and not main.has_fatal_result(results):
+        # 后台不读取交互任务：整批成功（含跳过重复）后才推进共享游标。
+        # 失败或中断时保留原进度，下次任一模式仍会采集未完成的单词。
         candidate = main.deserialize_word_entry(task["cursor"])
-        current = main._parse_cursor_file_content(cursor_path.read_text(encoding="utf-8")) if cursor_path.exists() else None
-        if current is None or main._is_after_cursor(candidate, *current):
-            write_json(cursor_path, {"last_addtime": task["cursor"]["addtime"], "last_word_uuid": candidate.uuid})
+        with activate(profile):
+            current = main.get_last_sync_cursor()
+            if current is None or main._is_after_cursor(candidate, *current):
+                main.set_last_sync_cursor(candidate.addtime, candidate.uuid)
     return task
 
 
